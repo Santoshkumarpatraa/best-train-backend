@@ -1,0 +1,39 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: best_train
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    volumes:
+      - .:/app
+      - /app/node_modules # preserve container node_modules (don't overwrite with host)
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: 8080
+      NODE_ENV: production
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/best_train
+      SYNC_STATION_URL: https://cdn.jsdelivr.net/gh/corover/assets@UIChange/askdisha-bucket/stations.json
+      SYNC_POPULAR_URL: https://cdn.jsdelivr.net/gh/corover/assets@t52/askdisha-bucket/popular.json
+      TRAIN_LIST_URL: https://www.irctc.co.in/eticketing/trainList
+      TRAIN_DETAILS_URL: https://www.irctc.co.in/eticketing/protected/mapps1/trnscheduleenquiry
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

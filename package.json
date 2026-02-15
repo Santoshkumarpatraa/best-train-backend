@@ -1,0 +1,28 @@
+{
+  "name": "best-train",
+  "version": "1.0.0",
+  "description": "best-train backend",
+  "main": "index.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "NODE_ENV=development node app.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "sync:stations": "node scripts/sync-stations.js",
+    "sync:popular": "node scripts/sync-popular-stations.js",
+    "sync:trains": "node scripts/sync-trains-list.js",
+    "sync:train-details": "node scripts/sync-train-details.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.2.1",
+    "helmet": "^8.1.0",
+    "joi": "^18.0.2",
+    "lodash": "^4.17.23",
+    "node-cache": "^5.1.2",
+    "pg": "^8.18.0"
+  }
+}

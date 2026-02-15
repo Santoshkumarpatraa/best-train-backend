@@ -1,0 +1,68 @@
+# Best Train Backend - Project Rules
+
+## Tech Stack
+
+- Node.js, Express
+- PostgreSQL (no ORM; raw SQL via SqlService)
+- Globals: LogService, ResponseService, ConstantService, SqlService, Joi (from config/globals.js)
+
+---
+
+## Controller Conventions
+
+When creating or modifying API controllers in `controllers/`, follow these rules:
+
+### 1. Module Structure
+
+- Flat export: `module.exports = { methodName: async (req, res) => { ... } }`
+- No nested `API` wrapper
+- JSDoc: API Endpoint, API Method, @param, @returns
+
+### 2. Logging
+
+```javascript
+LogService.info("====================== API NAME API ==============================");
+LogService.info("REQ QUERY : ", req.query);   // GET
+LogService.info("REQ BODY : ", req.body);     // POST
+```
+
+### 3. Request Object
+
+Build from `req.query` (GET) or `req.body` (POST). Pass raw values only—no defaults.
+
+### 4. Validation (Joi Only)
+
+- All validation in Joi schema
+- All defaults in Joi (`.default(...)`), not in request object or destructuring
+- `schema.validate(request, { abortEarly: false, stripUnknown: true })`
+- Return 400 on error: `ResponseService.jsonResponse(res, ConstantService.responseCode.BAD_REQUEST, { message: error.message })`
+- Extract validated values: `const { from, to, ... } = value`
+
+### 5. Constants
+
+Define constants after Joi validation, at the top of the handler logic.
+
+### 6. Step Comments
+
+Add numbered step comments for main logic blocks: `// Step 1:`, `// Step 2:`, etc. For nested logic: `// Step 6a:`, `// Step 6b:`.
+
+### 7. Query Comments
+
+Add a short comment above each SQL query explaining what it does and its parameters ($1, $2).
+
+### 8. SQL
+
+- Use parameterized queries ($1, $2, ...) only
+- Never interpolate user input into SQL strings
+- Use `SqlService.executeQuery(sql, params)`
+
+### 9. Response
+
+Success: `ResponseService.jsonResponse(res, ConstantService.responseCode.SUCCESS, { message: ..., data: { ... } })`
+
+Error (catch): `ResponseService.json(res, ConstantService.responseCode.INTERNAL_SERVER_ERROR, ConstantService.responseMessage.ERR_MSG_ISSUE_IN_...)`
+
+### 10. Reference
+
+- `controllers/trains/TrainController.js` – GET, complex queries, nearby search
+- `controllers/stations/StationController.js` – POST, list with filters, pagination
