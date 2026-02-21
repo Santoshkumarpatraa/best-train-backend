@@ -2,7 +2,7 @@
 --
 -- This will DELETE existing stations table + data and recreate everything fresh.
 -- Run it against your target database, e.g.:
---   psql "$DATABASE_URL" -f sql/initial.sql
+--   psql "$DATABASE_URL" -f sql/station-initial.sql
 
 -- Extensions (safe if already installed)
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
@@ -41,9 +41,4 @@ CREATE INDEX stations_name_gu_trgm_gin ON stations USING GIN (name_gu gin_trgm_o
 CREATE INDEX stations_state_trgm_gin ON stations USING GIN (state gin_trgm_ops);
 CREATE INDEX stations_district_trgm_gin ON stations USING GIN (district gin_trgm_ops);
 CREATE INDEX stations_is_popular_idx ON stations (is_popular) WHERE is_popular = true;
-
--- Add is_popular column to stations (for filtering popular stations)
-ALTER TABLE stations ADD COLUMN IF NOT EXISTS is_popular BOOLEAN NOT NULL DEFAULT false;
-CREATE INDEX IF NOT EXISTS stations_is_popular_idx ON stations (is_popular) WHERE is_popular = true;
-
 

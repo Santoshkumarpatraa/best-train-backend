@@ -15,3 +15,4 @@ global.ConstantService = require(path.join(appRoot, 'services/ConstantService'))
 global.SqlService = require(path.join(appRoot, 'services/SqlService'));
 global.HelperService = require(path.join(appRoot, "services/HelperService"));
 global.CacheService = require(path.join(appRoot, "services/CacheService"));
+global.PlaceService = require(path.join(appRoot, "services/PlaceService"));

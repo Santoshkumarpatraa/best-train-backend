@@ -2,7 +2,7 @@
 
 ## Overview
 
-Best Train is a Node.js/Express backend for Indian railway train and station data. It uses PostgreSQL for storage and sync scripts to pull data from external sources (IRCTC, etc.).
+Best Train is a Node.js/Express backend for Indian railway train and station data. It uses PostgreSQL for storage and sync scripts to pull data from configured URLs.
 
 ---
 
@@ -10,72 +10,82 @@ Best Train is a Node.js/Express backend for Indian railway train and station dat
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           EXTERNAL SOURCES                                    │
+│                           DATA SOURCES                                      │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  IRCTC Train List API          │  IRCTC Train Details API                    │
-│  (trainList?greq=...)          │  (trnscheduleenquiry/{trainNo})             │
-│                                │  Stations JSON (SYNC_STATION_URL, etc.)     │
-└───────────────┬────────────────┴─────────────────────┬───────────────────────┘
-                │                                       │
-                ▼                                       ▼
-┌───────────────────────────────┐     ┌───────────────────────────────────────┐
+│  Train List API                │  Train Details API                         │
+│  (trainList?greq=...)          │  (trnscheduleenquiry/{trainNo})            │
+│                                │  Stations JSON (SYNC_STATION_URL, etc.)    │
+└───────────────┬────────────────┴─────────────────────┬──────────────────────┘
+                │                                      │
+                ▼                                      ▼
+┌───────────────────────────────┐     ┌──────────────────────────────────────--─┐
 │   sync-trains-list.js         │     │   sync-train-details.js                 │
-│   - Fetches train list        │     │   - Fetches route per train            │
-│   - Parses "12303 - POORVA"   │     │   - Updates trains + train_route       │
+│   - Fetches train list        │     │   - Fetches route per train             │
+│   - Parses "12303 - POORVA"   │     │   - Updates trains + train_route        │
 │   - Upserts train_number,     │     │   - Calculates duration if API returns 0│
 │     train_name                │     │   - Rate limited (50ms default)         │
 └───────────────┬───────────────┘     └───────────────────┬─────────────────────┘
-                │                                       │
-                │     ┌─────────────────────────────┐   │
-                │     │  sync-stations.js            │   │
-                │     │  sync-popular-stations.js    │   │
-                │     │  (is_popular=false first,    │   │
-                │     │   then true from API)        │   │
-                │     └─────────────┬───────────────┘   │
-                │                   │                   │
-                └───────────────────┴───────────────────┘
+                │                                         │
+                │     ┌─────────────────────────────┐     │
+                │     │  sync-stations.js           │     │
+                │     │  sync-popular-stations.js   │     │
+                │     │  (is_popular=false first,   │     │
+                │     │   then true from API)       │     │
+                │     └─────────────┬───────────────┘     │
+                │                   │                     │
+                └───────────────────┴───────────────────--┘
                                     │
                                     ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         POSTGRESQL DATABASE                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   ┌─────────────────┐         ┌─────────────────────────────────────────┐   │
-│   │     trains      │         │              train_route                 │   │
-│   ├─────────────────┤         ├─────────────────────────────────────────┤   │
-│   │ id (PK)         │◄────────│ train_id (FK)                            │   │
-│   │ train_number    │  1    N │ station_code, station_name               │   │
-│   │ train_name      │         │ arrival_time, departure_time             │   │
-│   │ station_from    │         │ distance, day_count, serial_number        │   │
-│   │ station_to      │         │ route_number, halt_time, boarding_disabled│   │
-│   │ runs_on_*       │         └─────────────────────────────────────────┘   │
-│   │ duration        │                                                       │
-│   │ fetched_at      │         One train → many route stops (ordered)         │
-│   └─────────────────┘                                                       │
-│                                                                              │
-│   ┌─────────────────┐                                                       │
-│   │    stations     │   (Independent – linked by station_code)              │
-│   ├─────────────────┤                                                       │
-│   │ id (PK)         │                                                       │
-│   │ code (unique)   │   ← train_route.station_code, trains.station_from/to   │
-│   │ name, name_hi   │                                                       │
-│   │ location (point)│                                                       │
-│   │ is_popular      │                                                       │
-│   └─────────────────┘                                                       │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────---┐
+│                         POSTGRESQL DATABASE                                    │
+├────────────────────────────────────────────────────────────────────────────---─┤
+│                                                                                │
+│   ┌─────────────────┐         ┌─────────────────────────────────────────---┐   │
+│   │     trains      │         │              train_route                   │   │
+│   ├─────────────────┤         ├─────────────────────────────────────────---┤   │
+│   │ id (PK)         │◄────────│ train_id (FK)                              │   │
+│   │ train_number    │  1    N │ station_code, station_name                 │   │
+│   │ train_name      │         │ arrival_time, departure_time               │   │
+│   │ station_from    │         │ distance, day_count, serial_number         │   │
+│   │ station_to      │         │ route_number, halt_time, boarding_disabled │   │
+│   │ runs_on_*       │         └─────────────────────────────────────────---┘   │
+│   │ duration        │                                                          │
+│   │ fetched_at      │         One train → many route stops (ordered)           │
+│   └─────────────────┘                                                          │
+│                                                                                │
+│   ┌─────────────────┐         ┌─────────────────┐                              │
+│   │    stations     │         │     places      │                              │
+│   ├─────────────────┤         ├─────────────────┤                              │
+│   │ id (PK)         │         │ id (PK)         │◄── place_stations            │
+│   │ code (unique)   │         │ name, display_  │    (place_id, station_       │
+│   │ name, name_hi   │         │   name, state   │     code, rank)              │
+│   │ district, state │         │ description,    │                              │
+│   │ utterances      │         │   image_url     │                              │
+│   │ location (point)│         │ location (point)│                              │
+│   │ is_popular      │         └─────────────────┘                              │
+│   └─────────────────┘   ← train_route.station_code, trains.station_from/to     │
+│                                                                                │
+└───────────────────────────────────────────────────────────────────────────---──┘
                 │
                 ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
+┌─────────────────────────────────────────────────────────────────────────────-┐
 │                         EXPRESS API LAYER                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
+├─────────────────────────────────────────────────────────────────────────────-┤
 │  app.js → routes.js → controllers → services                                 │
 │                                                                              │
-│  GET  /                → HealthController.ping                               │
-│  POST /station/list    → StationController.stationList                       │
-│  GET  /train/between   → TrainController.trainBetweenStations                │
-│       ?from=HWH&to=NDLS&date=YYYY-MM-DD&skip=0&limit=20                       │
-└─────────────────────────────────────────────────────────────────────────────┘
+│  GET  /                    → HealthController.ping                           │
+│  POST /station/list        → StationController.stationList                   │
+│  POST   /place/add        → PlaceController.placeAdd                         │
+│  PUT    /place/:id       → PlaceController.placeEdit                         │
+│  DELETE /place/:id       → PlaceController.placeDelete                       │
+│  GET    /place/list      → PlaceController.placeList                         │
+│  GET  /train/between       → TrainController.trainBetweenPlaces              │
+│       (from/to: place, station code, or state – resolved via PlaceService)   │
+│  GET  /train/between/stations → TrainController.trainBetweenStations         │
+│       (from/to: station codes only)                                          │
+│  GET  /train/between/states   → TrainController.trainBetweenStates           │
+│       (from/to: state names)                                                 │
+└────────────────────────────────────────────────────────────────────────────-─┘
 ```
 
 ---
@@ -84,19 +94,19 @@ Best Train is a Node.js/Express backend for Indian railway train and station dat
 
 ### 1. `trains` – Master train info
 
-| Column          | Type        | Description |
-|-----------------|-------------|-------------|
-| `id`            | BIGSERIAL   | Primary key |
-| `train_number`  | INTEGER     | Unique (e.g. 12303) |
-| `train_name`    | TEXT        | e.g. "POORVA EXPRESS" |
-| `station_from`  | TEXT        | Source station code (HWH) |
+| Column          | Type        | Description                     |
+|-----------------|-------------|---------------------------------|
+| `id`            | BIGSERIAL   | Primary key                     |
+| `train_number`  | INTEGER     | Unique (e.g. 12303)             |
+| `train_name`    | TEXT        | e.g. "POORVA EXPRESS"           |
+| `station_from`  | TEXT        | Source station code (HWH)       |
 | `station_to`    | TEXT        | Destination station code (NDLS) |
-| `train_owner`   | TEXT        | Zone/owner code |
-| `runs_on_mon` … `runs_on_sun` | BOOLEAN | Weekly schedule |
-| `duration`      | TEXT        | Journey duration |
-| `fetched_at`    | TIMESTAMPTZ | Last sync timestamp |
-| `created_at`    | TIMESTAMPTZ | Row creation |
-| `updated_at`    | TIMESTAMPTZ | Row update |
+| `train_owner`   | TEXT        | Zone/owner code                 |
+| `runs_on_mon` … `runs_on_sun` | BOOLEAN | Weekly schedule       |
+| `duration`      | TEXT        | Journey duration                |
+| `fetched_at`    | TIMESTAMPTZ | Last sync timestamp             |
+| `created_at`    | TIMESTAMPTZ | Row creation                    |
+| `updated_at`    | TIMESTAMPTZ | Row update                      |
 
 **Indexes:** `train_number`, `station_from`, `station_to`, `(station_from, station_to)`
 
@@ -135,11 +145,45 @@ Best Train is a Node.js/Express backend for Indian railway train and station dat
 | `name`       | TEXT    | Display name |
 | `name_hi`, `name_gu` | TEXT | Localized names |
 | `district`, `state` | TEXT | Location metadata |
+| `address`    | TEXT    | Full address |
+| `train_count`| INTEGER | Number of trains |
+| `utterances` | JSONB   | Alternate spellings for search |
 | `location`   | POINT   | (lng, lat) |
 | `is_popular` | BOOLEAN | Popular station flag |
-| …            |         | Other metadata |
+| `created_at` | TIMESTAMPTZ | Row creation |
 
 **Relationship:** `trains.station_from` / `trains.station_to` and `train_route.station_code` reference `stations.code` conceptually (no FK yet).
+
+---
+
+### 4. `places` – Popular places (cities, landmarks)
+
+| Column        | Type    | Description |
+|---------------|---------|-------------|
+| `id`          | BIGSERIAL | Primary key |
+| `name`        | TEXT    | Unique (case-insensitive) |
+| `display_name`| TEXT    | Display label |
+| `state`       | TEXT    | State name |
+| `description`  | TEXT    | Optional description |
+| `image_url`   | TEXT    | Optional image URL |
+| `location`    | POINT   | (lng, lat) – optional |
+| `created_at`  | TIMESTAMPTZ | Row creation |
+
+**Indexes:** unique on `LOWER(TRIM(name))`, `name`, `state`
+
+---
+
+### 5. `place_stations` – Place → station mapping
+
+| Column        | Type    | Description |
+|---------------|---------|-------------|
+| `id`          | BIGSERIAL | Primary key |
+| `place_id`    | BIGINT  | FK → places.id (ON DELETE CASCADE) |
+| `station_code`| TEXT    | Station code (e.g. NDLS) |
+| `rank`        | INTEGER | 1 = primary station |
+| `created_at`  | TIMESTAMPTZ | Row creation |
+
+**Unique:** `(place_id, station_code)`. One place → many stations (ordered by rank).
 
 ---
 
@@ -147,14 +191,14 @@ Best Train is a Node.js/Express backend for Indian railway train and station dat
 
 ### Train list sync (`sync-trains-list.js`)
 
-1. Fetch from IRCTC train list API (returns `"12303 - POORVA EXPRESS"` style strings).
+1. Fetch from train list API (returns `"12303 - POORVA EXPRESS"` style strings).
 2. Parse into `{ train_number, train_name }`.
 3. Upsert into `trains` (ON CONFLICT train_number). Does not set `fetched_at`.
 
 ### Train details sync (`sync-train-details.js`)
 
 1. Select trains needing details (`station_from`/`station_to` null, or `fetched_at` > 6hr ago).
-2. For each train, fetch from IRCTC `trnscheduleenquiry/{trainNo}` (train number zero-padded to 5 digits).
+2. For each train, fetch from train details API `{baseUrl}/{trainNo}` (train number zero-padded to 5 digits).
 3. Parse response: `stationFrom`, `stationTo`, `stationList`, `runs_on_*`, `duration`.
 4. If API returns `duration: "0"`, calculate from first station `departureTime` to last station `arrivalTime` + `dayCount`.
 5. Update `trains` and replace `train_route` rows.
@@ -180,33 +224,40 @@ Best Train is a Node.js/Express backend for Indian railway train and station dat
 backend/
 ├── app.js                    # Express entry
 ├── config/
-│   ├── globals.js            # App globals
-│   └── routes.js             # Route definitions
+│   ├── config.js              # Env-based config
+│   ├── globals.js             # App globals (config, services)
+│   └── routes.js              # Route definitions
 ├── controllers/
 │   ├── app/
 │   │   └── HealthController.js
+│   ├── places/
+│   │   └── PlaceController.js
 │   ├── stations/
 │   │   └── StationController.js
 │   └── trains/
 │       └── TrainController.js
 ├── services/
+│   ├── browserHeaders.js     # Browser-like headers for API fetches
+│   ├── CacheService.js        # In-memory cache (train search)
 │   ├── ConstantService.js
-│   ├── HelperService.js
+│   ├── HelperService.js       # String.sanitize for LIKE escaping
 │   ├── LogService.js
+│   ├── PlaceService.js        # Resolve place/station/state → stations
 │   ├── ResponseService.js
 │   └── SqlService.js
 ├── scripts/
-│   ├── sync-trains-list.js     # Train list sync
-│   ├── sync-train-details.js   # Train route/details sync
-│   ├── sync-stations.js        # Station sync
-│   └── sync-popular-stations.js
+│   ├── stationSync.js         # Shared station sync logic
+│   ├── sync-stations.js       # Station sync
+│   ├── sync-popular-stations.js
+│   ├── sync-trains-list.js    # Train list sync
+│   ├── sync-train-details.js  # Train route/details sync
+│   └── utils.js              # chunk, toIntOrNull, fetchJson, etc.
 ├── sql/
-│   ├── station-initial.sql     # stations schema
-│   ├── trains-initial.sql      # trains + train_route schema
-│   ├── trains-allow-null-stations.sql
-│   └── train-route-create.sql
+│   ├── station-initial.sql    # stations schema
+│   ├── places-initial.sql    # places + place_stations schema
+│   └── trains-initial.sql    # trains + train_route schema
 └── docs/
-    └── ARCHITECTURE.md       # This file
+    └── ARCHITECTURE.md        # This file
 ```
 
 ---
@@ -242,8 +293,8 @@ backend/
 |-----------------------|---------|
 | `DATABASE_URL`        | PostgreSQL connection string |
 | `PORT`                | API server port (default 3000) |
-| `TRAIN_LIST_URL`      | IRCTC train list API URL |
-| `TRAIN_DETAILS_URL`   | IRCTC train details API base URL |
+| `TRAIN_LIST_URL`      | Train list API URL |
+| `TRAIN_DETAILS_URL`   | Train details API base URL |
 | `SYNC_STATION_URL`    | Stations JSON URL |
 | `SYNC_POPULAR_URL`    | Popular stations JSON URL |
 | `BATCH_SIZE`          | Batch size for sync upserts (default 500) |
@@ -260,11 +311,26 @@ backend/
 
 ---
 
-## Train Between Stations API
+## Train APIs
 
-**Endpoint:** `GET /train/between`
+### 1. `GET /train/between` – Place / station / state resolution
 
-**Query params (Joi validated):**
+Resolves `from` and `to` via PlaceService: station code (NDLS), place name (Delhi, Taj Mahal), or state name (Maharashtra). Returns trains between resolved station pairs.
+
+| Param  | Type   | Required | Description |
+|--------|--------|----------|-------------|
+| from   | string | ✓        | Source: station code, place name, or state |
+| to     | string | ✓        | Destination: station code, place name, or state |
+| date   | string |          | YYYY-MM-DD – filter by day |
+| limit  | number |          | Page size (default 30, max 100) |
+| sort   | string |          | `duration`, `departure_time`, `arrival_time` (default: duration) |
+| order  | string |          | `asc`, `desc` (default: asc) |
+
+---
+
+### 2. `GET /train/between/stations` – Station codes only
+
+Direct station-to-station search. `from` and `to` must be station codes (e.g. HWH, NDLS).
 
 | Param  | Type   | Required | Description |
 |--------|--------|----------|-------------|
@@ -273,6 +339,8 @@ backend/
 | date   | string |          | YYYY-MM-DD – filter by day; when present, adds `alternate_days` |
 | skip   | number |          | Pagination offset (default 0) |
 | limit  | number |          | Page size (default 20, max 100) |
+| sort   | string |          | `duration`, `departure_time`, `arrival_time` |
+| order  | string |          | `asc`, `desc` |
 
 **Response (with date):**
 
@@ -292,7 +360,69 @@ backend/
 }
 ```
 
-**Response (without date):** All trains between stations; no `alternate_days`.
+---
+
+### 3. `GET /train/between/states` – State names only
+
+Returns trains between top stations in each state.
+
+| Param       | Type   | Required | Description |
+|-------------|--------|----------|-------------|
+| from_state | string | ✓        | Source state name |
+| to_state   | string | ✓        | Destination state name |
+| date       | string |          | YYYY-MM-DD |
+| limit      | number |          | Page size (default 30, max 100) |
+| sort       | string |          | `duration`, `departure_time`, `arrival_time` |
+| order      | string |          | `asc`, `desc` |
+
+---
+
+## Place APIs
+
+### `POST /place/add`
+
+Add or update a place (city, landmark) with linked stations.
+
+**Body:** `{ name, display_name?, state?, description?, image_url?, lat?, lng?, stations: [station_code, ...] }`
+
+- `name` (required): Place name (unique, case-insensitive)
+- `stations` (required): Array of station codes (1–20)
+- `lat`, `lng`: Optional location (POINT)
+- If place exists: updates description, image_url, location, and replaces station links
+
+---
+
+### `PUT /place/:id`
+
+Edit an existing place by ID. All body fields are optional (partial update).
+
+**Body:** `{ name?, display_name?, state?, description?, image_url?, lat?, lng?, stations? }`
+
+- Omitted fields keep their current values
+- `lat`, `lng`: pass `null` to clear location
+- `stations`: if provided, replaces all station links; if omitted, keeps existing
+
+**Response:** 200 with updated place data, or 404 if place not found.
+
+---
+
+### `DELETE /place/:id`
+
+Delete a place by ID. Cascades to `place_stations` (linked stations are removed).
+
+**Response:** 200 with `{ message, data: { id } }`, 404 if place not found.
+
+---
+
+### `GET /place/list`
+
+List places with optional search.
+
+| Param  | Type   | Description |
+|--------|--------|-------------|
+| search | string | Filter by name, display_name, or state (ILIKE) |
+| skip   | number | Pagination offset (default 0) |
+| limit  | number | Page size (default 20, max 100) |
 
 ---
 

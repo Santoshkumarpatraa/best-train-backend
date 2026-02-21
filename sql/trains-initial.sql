@@ -1,7 +1,7 @@
 -- best-train: trains and train_route schema
 --
 -- Run against your target database, e.g.:
---   psql "$DATABASE_URL" -f sql/trains.sql
+--   psql "$DATABASE_URL" -f sql/trains-initial.sql
 
 -- Drop existing tables (order matters due to FK)
 DROP TABLE IF EXISTS train_route CASCADE;

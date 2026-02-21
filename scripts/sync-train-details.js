@@ -211,6 +211,15 @@ async function main() {
   const baseUrl = customConfig.TRAIN_DETAILS_URL;
   const databaseUrl = customConfig.DATABASE_URL;
 
+  if (!baseUrl) {
+    console.error("TRAIN_DETAILS_URL is required");
+    process.exit(1);
+  }
+  if (!databaseUrl) {
+    console.error("DATABASE_URL is required");
+    process.exit(1);
+  }
+
   const delayMs =
     customConfig.SYNC_TRAIN_DELAY_MS != null
       ? Math.max(100, customConfig.SYNC_TRAIN_DELAY_MS || 50)
@@ -228,10 +237,7 @@ async function main() {
   const client = new pg.Client({ connectionString: databaseUrl });
   await client.connect();
 
-  const skipIdx =
-    process.argv.indexOf("--skip") >= 0
-      ? process.argv.indexOf("--skip")
-      : process.argv.indexOf("-i");
+  const skipIdx = process.argv.indexOf("--skip");
   const skipCount =
     skipIdx >= 0 && process.argv[skipIdx + 1] != null
       ? Math.max(0, parseInt(process.argv[skipIdx + 1], 10) || 0)

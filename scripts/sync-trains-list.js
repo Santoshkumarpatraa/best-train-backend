@@ -91,6 +91,11 @@ async function main() {
     Math.min(Number.isFinite(batchSize) ? batchSize : 500, 2000)
   );
 
+  if (!url) {
+    console.error("TRAIN_LIST_URL is required");
+    process.exit(1);
+  }
+
   // eslint-disable-next-line no-console
   console.log(`Syncing trains from: ${url}`);
 

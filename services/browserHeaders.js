@@ -1,6 +1,5 @@
 /**
- * Browser-like headers to mimic normal user requests.
- * Use for all external API fetches to avoid blocking.
+ * Browser-like headers for API requests.
  */
 module.exports = (() => {
   const DEFAULT_HEADERS = {

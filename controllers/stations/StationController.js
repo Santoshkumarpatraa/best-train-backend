@@ -61,10 +61,17 @@ module.exports = {
                 conditions.push("is_popular = true");
             }
             if (search) {
-                const searchPattern = `%${String(search).replace(/[%_\\]/g, "\\$&")}%`;
+                const searchPattern = `%${String(search).sanitize()}%`;
                 queryParams.push(searchPattern);
                 countQueryParams.push(searchPattern);
-                conditions.push(`(name ILIKE $${paramIndex} OR code ILIKE $${paramIndex})`);
+                conditions.push(`(
+                    name ILIKE $${paramIndex}
+                    OR code ILIKE $${paramIndex}
+                    OR (utterances IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM jsonb_array_elements_text(utterances) AS elem
+                        WHERE elem ILIKE $${paramIndex}
+                    ))
+                )`);
                 paramIndex++;
             }
 

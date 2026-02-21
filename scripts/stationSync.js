@@ -2,6 +2,7 @@
  * Shared station sync logic for sync-stations.js and sync-popular-stations.js.
  */
 const pg = require("pg");
+const customConfig = require("../config/config");
 const { toIntOrNull, toStringOrNull, chunk, fetchJson } = require("./utils");
 
 // --- Constants ---
