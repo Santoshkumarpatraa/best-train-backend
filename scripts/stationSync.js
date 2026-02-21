@@ -1,7 +1,20 @@
 /**
  * Shared station sync logic for sync-stations.js and sync-popular-stations.js.
  */
-const { toIntOrNull, toStringOrNull } = require("./utils");
+const pg = require("pg");
+const { toIntOrNull, toStringOrNull, chunk, fetchJson } = require("./utils");
+
+// --- Constants ---
+const BATCH_SIZE_MIN = 1;
+const BATCH_SIZE_MAX = 5000;
+const BATCH_SIZE_DEFAULT = 1000;
+
+const STATE_ALIASES = {
+  Chhattisgrah: "Chhattisgarh",
+  "Delhi NCT": "Delhi",
+  Harayana: "Haryana",
+  Telanganah: "Telangana",
+};
 
 const STATION_COLS = [
   "name",
@@ -17,11 +30,18 @@ const STATION_COLS = [
   "location_lat",
 ];
 
-/**
- * Normalize a raw station row from API/JSON to DB shape.
- * @param {Object} row - Raw row with code, name, latitude, longitude, etc.
- * @returns {Object|null} Normalized station or null if invalid
- */
+const CLEANUP_EMPTY_STATE_SQL =
+  "UPDATE stations SET state = NULL WHERE state IS NOT NULL AND TRIM(state) = ''";
+
+// --- State normalization ---
+function normalizeState(state) {
+  const s = toStringOrNull(state);
+  if (!s || (typeof s === "string" && s.trim() === "")) return null;
+  const trimmed = s.trim();
+  return STATE_ALIASES[trimmed] ?? trimmed;
+}
+
+// --- Row normalization ---
 function normalizeStationRow(row) {
   const code = toStringOrNull(row.code);
   const name = toStringOrNull(row.name);
@@ -39,7 +59,7 @@ function normalizeStationRow(row) {
     name_hi: toStringOrNull(row.name_hi),
     name_gu: toStringOrNull(row.name_gu),
     district: toStringOrNull(row.district),
-    state: toStringOrNull(row.state),
+    state: normalizeState(row.state ?? row.stateName ?? row.state_name),
     address: toStringOrNull(row.address),
     train_count: toIntOrNull(row.trainCount ?? row.train_count),
     utterances: utterances ?? "null",
@@ -48,13 +68,7 @@ function normalizeStationRow(row) {
   };
 }
 
-/**
- * Upsert a batch of stations.
- * @param {pg.Client} client - Database client
- * @param {Object[]} stations - Normalized stations (from normalizeStationRow)
- * @param {Object} options
- * @param {boolean} [options.isPopular=false] - If true, include is_popular=true in INSERT/UPDATE
- */
+// --- Batch upsert ---
 async function upsertStationsBatch(client, stations, { isPopular = false } = {}) {
   const values = [];
   const rowsSql = stations
@@ -85,25 +99,14 @@ async function upsertStationsBatch(client, stations, { isPopular = false } = {})
     ? "v.name, v.code, v.name_hi, v.name_gu, v.district, v.state, v.address, v.train_count::int, v.utterances::jsonb, point(v.location_lng::float8, v.location_lat::float8), true"
     : "v.name, v.code, v.name_hi, v.name_gu, v.district, v.state, v.address, v.train_count::int, v.utterances::jsonb, point(v.location_lng::float8, v.location_lat::float8)";
   const updateSet = isPopular
-    ? `name = EXCLUDED.name,
-      name_hi = EXCLUDED.name_hi,
-      name_gu = EXCLUDED.name_gu,
-      district = EXCLUDED.district,
-      state = EXCLUDED.state,
-      address = EXCLUDED.address,
-      train_count = EXCLUDED.train_count,
-      utterances = EXCLUDED.utterances,
-      location = EXCLUDED.location,
-      is_popular = true`
-    : `name = EXCLUDED.name,
-      name_hi = EXCLUDED.name_hi,
-      name_gu = EXCLUDED.name_gu,
-      district = EXCLUDED.district,
-      state = EXCLUDED.state,
-      address = EXCLUDED.address,
-      train_count = EXCLUDED.train_count,
-      utterances = EXCLUDED.utterances,
-      location = EXCLUDED.location`;
+    ? `name = EXCLUDED.name, name_hi = EXCLUDED.name_hi, name_gu = EXCLUDED.name_gu,
+       district = EXCLUDED.district, state = EXCLUDED.state, address = EXCLUDED.address,
+       train_count = EXCLUDED.train_count, utterances = EXCLUDED.utterances,
+       location = EXCLUDED.location, is_popular = true`
+    : `name = EXCLUDED.name, name_hi = EXCLUDED.name_hi, name_gu = EXCLUDED.name_gu,
+       district = EXCLUDED.district, state = EXCLUDED.state, address = EXCLUDED.address,
+       train_count = EXCLUDED.train_count, utterances = EXCLUDED.utterances,
+       location = EXCLUDED.location`;
 
   const sql = `
     INSERT INTO stations (${insertCols})
@@ -115,7 +118,57 @@ async function upsertStationsBatch(client, stations, { isPopular = false } = {})
   await client.query(sql, values);
 }
 
+// --- Post-sync cleanup ---
+async function cleanupEmptyStates(client) {
+  const res = await client.query(CLEANUP_EMPTY_STATE_SQL);
+  return res.rowCount ?? 0;
+}
+
+// --- Main sync runner ---
+async function runStationSync(options) {
+  const {
+    url,
+    isPopular = false,
+    truncate = false,
+    batchSize = customConfig.BATCH_SIZE ?? BATCH_SIZE_DEFAULT,
+  } = options;
+
+  const boundedBatchSize = Math.max(
+    BATCH_SIZE_MIN,
+    Math.min(Number.isFinite(batchSize) ? batchSize : BATCH_SIZE_DEFAULT, BATCH_SIZE_MAX)
+  );
+
+  const raw = await fetchJson(url);
+  if (!Array.isArray(raw)) {
+    throw new Error("Stations API must return an array");
+  }
+
+  const normalized = raw.map(normalizeStationRow).filter(Boolean);
+
+  const client = new pg.Client({ connectionString: customConfig.DATABASE_URL });
+  await client.connect();
+
+  try {
+    if (isPopular) {
+      await client.query("UPDATE stations SET is_popular = false");
+    } else if (truncate) {
+      await client.query("TRUNCATE stations");
+    }
+
+    for (const group of chunk(normalized, boundedBatchSize)) {
+      await upsertStationsBatch(client, group, { isPopular });
+    }
+
+    const cleaned = await cleanupEmptyStates(client);
+    return { count: normalized.length, cleaned };
+  } finally {
+    await client.end();
+  }
+}
+
 module.exports = {
   normalizeStationRow,
   upsertStationsBatch,
+  cleanupEmptyStates,
+  runStationSync,
 };
