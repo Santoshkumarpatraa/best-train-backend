@@ -1,3 +1,35 @@
+/**
+ * Helper function to sort trains array by duration, departure_time, or arrival_time.
+ * @param {Array} trains - Array of train objects to sort
+ * @param {string} sort - Sort field: "duration", "departure_time", or "arrival_time"
+ * @param {string} order - Sort order: "asc" or "desc"
+ * @returns {void} - Sorts the array in place
+ */
+function sortTrains(trains, sort, order) {
+    const parseDurationMins = (d) => {
+        if (!d || typeof d !== "string") return 999999;
+        const [h, m] = d.split(":").map((x) => parseInt(x, 10) || 0);
+        return h * 60 + m;
+    };
+    const timeStr = (t) => (t ? String(t).replace(/:\d{2}$/, "") : "") || "99:99";
+
+    trains.sort((a, b) => {
+        if (sort === "duration") {
+            const diff = parseDurationMins(a.duration) - parseDurationMins(b.duration);
+            return order === "asc" ? diff : -diff;
+        }
+        if (sort === "departure_time") {
+            const cmp = timeStr(a.departure_time).localeCompare(timeStr(b.departure_time));
+            return order === "asc" ? cmp : -cmp;
+        }
+        if (sort === "arrival_time") {
+            const cmp = timeStr(a.arrival_time).localeCompare(timeStr(b.arrival_time));
+            return order === "asc" ? cmp : -cmp;
+        }
+        return 0;
+    });
+}
+
 module.exports = {
     /**
      * Find trains between two stations.
@@ -65,6 +97,7 @@ module.exports = {
             const alternateDayCondition = hasDateFilter ? ` AND t.${DAY_COLS[day]} = false` : "";
 
             // Duration in minutes: (arrival_time + day_offset) - departure_time
+            // Handle NULL day_count: NULL defaults to 1 (first day of journey)
             const DURATION_MINS = `(
                 EXTRACT(EPOCH FROM (to_stop.arrival_time::time)) / 60
                 + GREATEST(0, COALESCE(to_stop.day_count, 1) - COALESCE(from_stop.day_count, 1)) * 24 * 60
@@ -141,8 +174,10 @@ module.exports = {
                 + sin(radians(orig.location[1])) * sin(radians(s.location[1]))
             ))))`;
 
-            // Step 4: Check cache (key: from, to, date, skip, limit, sort, order)
-            const cacheKey = `train:${from}:${to}:${dateStr ?? "all"}:${skip}:${limit}:${sort}:${order}`;
+            // Step 4: Check cache (key: from, to, date/day, skip, limit, sort, order)
+            // Include day in cache key if dateStr is empty (day passed separately) or if day is explicitly set
+            const dayKey = dateStr ? dateStr : (day != null ? `day:${day}` : "all");
+            const cacheKey = `train:${from}:${to}:${dayKey}:${skip}:${limit}:${sort}:${order}`;
             const cached = CacheService.get(cacheKey);
             if (cached) {
                 LogService.info(`[CACHE HIT] ${cacheKey}`);
@@ -160,9 +195,13 @@ module.exports = {
             `;
             const countSQL = `SELECT COUNT(*) AS total ${trainJoins} ${dayCondition}`;
             const fromToDistanceSQL = `
-                SELECT ${HAVERSINE_KM}::int AS distance_km, f.name AS from_name, t.name AS to_name
+                SELECT ${HAVERSINE_KM}::int AS distance_km, f.name AS from_name, t.name AS to_name,
+                    f.location[0] AS from_lng, f.location[1] AS from_lat,
+                    t.location[0] AS to_lng, t.location[1] AS to_lat
                 FROM stations f CROSS JOIN stations t
                 WHERE f.code = $1 AND t.code = $2
+                    AND f.location[0] != 0 AND f.location[1] != 0
+                    AND t.location[0] != 0 AND t.location[1] != 0
             `;
 
             const [trainsResult, countResult, fromToResult] = await Promise.all([
@@ -173,6 +212,57 @@ module.exports = {
 
             const trains = trainsResult.rows;
             const fromToRow = fromToResult.rows[0];
+
+            // Validate station coordinates
+            if (!fromToRow || !fromToRow.from_name || !fromToRow.to_name) {
+                // Query returned no rows - could be missing stations or invalid coordinates
+                // Check if stations exist first
+                const stationCheckSQL = `
+                    SELECT code, name, 
+                        (location IS NULL OR location = '(0,0)'::point) AS has_invalid_coords
+                    FROM stations 
+                    WHERE code = ANY(ARRAY[$1, $2])
+                `;
+                const stationCheckResult = await SqlService.executeQuery(stationCheckSQL, [from, to]);
+                const foundStations = stationCheckResult.rows || [];
+
+                if (foundStations.length === 0) {
+                    return ResponseService.jsonResponse(res, ConstantService.responseCode.BAD_REQUEST, {
+                        message: `Could not find stations: ${from} or ${to}`,
+                    });
+                }
+
+                const invalidCoordsStations = foundStations
+                    .filter(s => s.has_invalid_coords)
+                    .map(s => `${s.code} (${s.name})`);
+
+                if (invalidCoordsStations.length > 0) {
+                    return ResponseService.jsonResponse(res, ConstantService.responseCode.BAD_REQUEST, {
+                        message: `Stations ${invalidCoordsStations.join(' and ')} do not have valid GPS coordinates (0, 0). Cannot calculate distance.`,
+                    });
+                }
+
+                return ResponseService.jsonResponse(res, ConstantService.responseCode.BAD_REQUEST, {
+                    message: `Could not calculate distance between stations: ${from} and ${to}`,
+                });
+            }
+
+            // Additional validation check (should not be needed due to SQL filter, but kept for safety)
+            const fromHasValidCoords = fromToRow.from_lng != null && fromToRow.from_lat != null
+                && fromToRow.from_lng != 0 && fromToRow.from_lat != 0;
+            const toHasValidCoords = fromToRow.to_lng != null && fromToRow.to_lat != null
+                && fromToRow.to_lng != 0 && fromToRow.to_lat != 0;
+
+            if (!fromHasValidCoords || !toHasValidCoords) {
+                const invalidStations = [];
+                if (!fromHasValidCoords) invalidStations.push(`${from} (${fromToRow.from_name})`);
+                if (!toHasValidCoords) invalidStations.push(`${to} (${fromToRow.to_name})`);
+
+                return ResponseService.jsonResponse(res, ConstantService.responseCode.BAD_REQUEST, {
+                    message: `Stations ${invalidStations.join(' and ')} do not have valid GPS coordinates. Cannot calculate distance.`,
+                });
+            }
+
             const fromToDistanceKm = parseInt(fromToRow?.distance_km, 10) || 0;
             const shouldFindNearby = fromToDistanceKm > NEARBY_MIN_DISTANCE_KM || (trains.length === 0 && fromToDistanceKm > 0);
 
@@ -183,6 +273,7 @@ module.exports = {
             let nearbyTrains = [];
             if (shouldFindNearby) {
                 // Step 6a: Stations within 100 km of orig ($1), excluding orig and the other station ($2). Ordered by train_count, limit 5.
+                // Exclude stations with invalid coordinates (0, 0) and ensure distance > 0
                 const nearbySQL = `
                     SELECT s.code, s.name, s.train_count,
                         ${HAVERSINE_SINGLE}::int AS distance_km
@@ -190,6 +281,9 @@ module.exports = {
                     CROSS JOIN (SELECT code, location FROM stations WHERE code = $1) orig
                     WHERE s.code != orig.code
                         AND s.code != $2
+                        AND s.location[0] != 0 AND s.location[1] != 0
+                        AND orig.location[0] != 0 AND orig.location[1] != 0
+                        AND ${HAVERSINE_SINGLE} > 0
                         AND ${HAVERSINE_SINGLE} <= ${NEARBY_DISTANCE_KM}
                     ORDER BY COALESCE(s.train_count, 0) DESC NULLS LAST
                     LIMIT ${NEARBY_STATIONS_LIMIT}
@@ -240,7 +334,56 @@ module.exports = {
                             trains: filtered,
                         };
                     })
-                    .filter((item) => item.trains.length > 0);
+                    .filter((item) => item.trains.length > 0)
+                    .sort((a, b) => {
+                        // Sort nearby trains groups according to priority:
+                        // 1. Origin same, destination nearby (sort by destination distance ASC)
+                        // 2. Destination same, origin nearby (sort by origin distance ASC)
+                        // 3. Both nearby (sort by origin distance ASC, then destination distance ASC)
+                        const aFromSame = a.from_station.code === from;
+                        const aToSame = a.to_station.code === to;
+                        const bFromSame = b.from_station.code === from;
+                        const bToSame = b.to_station.code === to;
+
+                        // Category 1: Origin same, destination nearby
+                        const aIsCategory1 = aFromSame && !aToSame;
+                        const bIsCategory1 = bFromSame && !bToSame;
+
+                        // Category 2: Destination same, origin nearby
+                        const aIsCategory2 = !aFromSame && aToSame;
+                        const bIsCategory2 = !bFromSame && bToSame;
+
+                        // Category 3: Both nearby
+                        const aIsCategory3 = !aFromSame && !aToSame;
+                        const bIsCategory3 = !bFromSame && !bToSame;
+
+                        // Priority: Category 1 > Category 2 > Category 3
+                        if (aIsCategory1 && !bIsCategory1) return -1;
+                        if (!aIsCategory1 && bIsCategory1) return 1;
+
+                        if (aIsCategory2 && !bIsCategory2 && !bIsCategory1) return -1;
+                        if (!aIsCategory2 && bIsCategory2 && !aIsCategory1) return 1;
+
+                        // Within same category, sort by distance
+                        if (aIsCategory1 && bIsCategory1) {
+                            // Sort by destination distance ASC
+                            return (a.to_station.distance_km || 0) - (b.to_station.distance_km || 0);
+                        }
+
+                        if (aIsCategory2 && bIsCategory2) {
+                            // Sort by origin distance ASC
+                            return (a.from_station.distance_km || 0) - (b.from_station.distance_km || 0);
+                        }
+
+                        if (aIsCategory3 && bIsCategory3) {
+                            // Sort by origin distance ASC, then destination distance ASC
+                            const originDiff = (a.from_station.distance_km || 0) - (b.from_station.distance_km || 0);
+                            if (originDiff !== 0) return originDiff;
+                            return (a.to_station.distance_km || 0) - (b.to_station.distance_km || 0);
+                        }
+
+                        return 0;
+                    });
             }
 
             // Step 7: Fetch alternate-day trains (when date filter applied)
@@ -280,7 +423,11 @@ module.exports = {
                 message: ConstantService.responseMessage.TRAIN_BETWEEN_STATIONS,
                 data,
             };
-            CacheService.set(cacheKey, response);
+
+            // Step 9: Cache the response for 1 day (24 hours)
+            const ttlSeconds = 24 * 60 * 60; // 1 day in seconds
+
+            CacheService.set(cacheKey, response, ttlSeconds);
 
             return ResponseService.jsonResponse(res, ConstantService.responseCode.SUCCESS, response);
         } catch (exception) {
@@ -335,7 +482,16 @@ module.exports = {
                 if (!Number.isNaN(d.getTime())) day = d.getDay();
             }
 
-            // Step 1: Get top stations per state (by train_count)
+            // Step 1: Check cache
+            const cacheKey = `train:states:${from_state}:${to_state}:${dateStr || "all"}:${limit}:${sort}:${order}`;
+            const cached = CacheService.get(cacheKey);
+            if (cached) {
+                LogService.info(`[CACHE HIT] ${cacheKey}`);
+                return ResponseService.jsonResponse(res, ConstantService.responseCode.SUCCESS, cached);
+            }
+            LogService.info(`[CACHE MISS] ${cacheKey}`);
+
+            // Step 2: Get top stations per state (by train_count)
             const STATIONS_PER_STATE = 5;
             const TRAINS_PER_PAIR = 15;
 
@@ -371,11 +527,13 @@ module.exports = {
                 });
             }
 
-            // Step 2: Build SQL fragments (same as trainBetweenStations)
+            // Step 3: Build SQL fragments (same as trainBetweenStations)
             const DAY_COLS = ["runs_on_sun", "runs_on_mon", "runs_on_tue", "runs_on_wed", "runs_on_thu", "runs_on_fri", "runs_on_sat"];
             const hasDateFilter = day != null && day >= 0 && day <= 6;
             const dayCondition = hasDateFilter ? ` AND t.${DAY_COLS[day]} = true` : "";
 
+            // Duration in minutes: (arrival_time + day_offset) - departure_time
+            // Handle NULL day_count: NULL defaults to 1 (first day of journey)
             const DURATION_MINS = `(
                 EXTRACT(EPOCH FROM (to_stop.arrival_time::time)) / 60
                 + GREATEST(0, COALESCE(to_stop.day_count, 1) - COALESCE(from_stop.day_count, 1)) * 24 * 60
@@ -445,7 +603,7 @@ module.exports = {
                 LIMIT $3
             `;
 
-            // Step 3: Query trains for each station pair, merge and deduplicate
+            // Step 4: Query trains for each station pair, merge and deduplicate
             const seenTrainNumbers = new Set();
             const allTrains = [];
             const routeDetails = [];
@@ -474,28 +632,8 @@ module.exports = {
                 if (allTrains.length >= limit) break;
             }
 
-            // Step 4: Sort merged trains by duration/departure/arrival
-            const parseDurationMins = (d) => {
-                if (!d || typeof d !== "string") return 999999;
-                const [h, m] = d.split(":").map((x) => parseInt(x, 10) || 0);
-                return h * 60 + m;
-            };
-            const timeStr = (t) => (t ? String(t).replace(/:\d{2}$/, "") : "") || "99:99";
-            allTrains.sort((a, b) => {
-                if (sort === "duration") {
-                    const diff = parseDurationMins(a.duration) - parseDurationMins(b.duration);
-                    return order === "asc" ? diff : -diff;
-                }
-                if (sort === "departure_time") {
-                    const cmp = timeStr(a.departure_time).localeCompare(timeStr(b.departure_time));
-                    return order === "asc" ? cmp : -cmp;
-                }
-                if (sort === "arrival_time") {
-                    const cmp = timeStr(a.arrival_time).localeCompare(timeStr(b.arrival_time));
-                    return order === "asc" ? cmp : -cmp;
-                }
-                return 0;
-            });
+            // Step 5: Sort merged trains by duration/departure/arrival
+            sortTrains(allTrains, sort, order);
 
             const data = {
                 from_state,
@@ -511,10 +649,16 @@ module.exports = {
                 data.dayOfWeek = day;
             }
 
-            return ResponseService.jsonResponse(res, ConstantService.responseCode.SUCCESS, {
+            const response = {
                 message: ConstantService.responseMessage.TRAIN_BETWEEN_STATES,
                 data,
-            });
+            };
+
+            // Step 6: Cache the response for 1 day (24 hours)
+            const ttlSeconds = 24 * 60 * 60; // 1 day in seconds
+            CacheService.set(cacheKey, response, ttlSeconds);
+
+            return ResponseService.jsonResponse(res, ConstantService.responseCode.SUCCESS, response);
         } catch (exception) {
             LogService.error(exception);
             return ResponseService.json(res, ConstantService.responseCode.INTERNAL_SERVER_ERROR, ConstantService.responseMessage.ERR_MSG_ISSUE_IN_TRAIN_BETWEEN_STATES_API);
@@ -564,7 +708,7 @@ module.exports = {
                 if (!Number.isNaN(d.getTime())) day = d.getDay();
             }
 
-            const cacheKey = `train:place:${fromInput}:${toInput}:${dateStr ?? "all"}:${limit}:${sort}:${order}`;
+            const cacheKey = `train:place:${fromInput}:${toInput}:${dateStr || "all"}:${limit}:${sort}:${order}`;
             const cached = CacheService.get(cacheKey);
             if (cached) {
                 LogService.info(`[CACHE HIT] ${cacheKey}`);
@@ -593,6 +737,8 @@ module.exports = {
             const hasDateFilter = day != null && day >= 0 && day <= 6;
             const dayCondition = hasDateFilter ? ` AND t.${DAY_COLS[day]} = true` : "";
 
+            // Duration in minutes: (arrival_time + day_offset) - departure_time
+            // Handle NULL day_count: NULL defaults to 1 (first day of journey)
             const DURATION_MINS = `(
                 EXTRACT(EPOCH FROM (to_stop.arrival_time::time)) / 60
                 + GREATEST(0, COALESCE(to_stop.day_count, 1) - COALESCE(from_stop.day_count, 1)) * 24 * 60
@@ -682,27 +828,7 @@ module.exports = {
                 if (allTrains.length >= limit) break;
             }
 
-            const parseDurationMins = (d) => {
-                if (!d || typeof d !== "string") return 999999;
-                const [h, m] = d.split(":").map((x) => parseInt(x, 10) || 0);
-                return h * 60 + m;
-            };
-            const timeStr = (t) => (t ? String(t).replace(/:\d{2}$/, "") : "") || "99:99";
-            allTrains.sort((a, b) => {
-                if (sort === "duration") {
-                    const diff = parseDurationMins(a.duration) - parseDurationMins(b.duration);
-                    return order === "asc" ? diff : -diff;
-                }
-                if (sort === "departure_time") {
-                    const cmp = timeStr(a.departure_time).localeCompare(timeStr(b.departure_time));
-                    return order === "asc" ? cmp : -cmp;
-                }
-                if (sort === "arrival_time") {
-                    const cmp = timeStr(a.arrival_time).localeCompare(timeStr(b.arrival_time));
-                    return order === "asc" ? cmp : -cmp;
-                }
-                return 0;
-            });
+            sortTrains(allTrains, sort, order);
 
             const data = {
                 from: { input: fromInput, type: fromResult.type, label: fromResult.label, stations: fromStations },
@@ -719,7 +845,11 @@ module.exports = {
                 message: ConstantService.responseMessage.TRAIN_BETWEEN_PLACES,
                 data,
             };
-            CacheService.set(cacheKey, response);
+
+            // Cache the response for 1 day (24 hours)
+            const ttlSeconds = 24 * 60 * 60; // 1 day in seconds
+            CacheService.set(cacheKey, response, ttlSeconds);
+
             return ResponseService.jsonResponse(res, ConstantService.responseCode.SUCCESS, response);
         } catch (exception) {
             LogService.error(exception);

@@ -41,4 +41,8 @@ CREATE INDEX stations_name_gu_trgm_gin ON stations USING GIN (name_gu gin_trgm_o
 CREATE INDEX stations_state_trgm_gin ON stations USING GIN (state gin_trgm_ops);
 CREATE INDEX stations_district_trgm_gin ON stations USING GIN (district gin_trgm_ops);
 CREATE INDEX stations_is_popular_idx ON stations (is_popular) WHERE is_popular = true;
+CREATE INDEX stations_train_count_idx ON stations (train_count DESC NULLS LAST);
+CREATE INDEX stations_utterances_gin ON stations USING GIN (utterances);
+CREATE INDEX stations_popular_train_count_idx ON stations (is_popular DESC, train_count DESC NULLS LAST);
+CREATE INDEX stations_created_at_idx ON stations (created_at DESC);
 

@@ -15,9 +15,13 @@ function get(key) {
   return cache.get(key);
 }
 
-function set(key, value) {
+function set(key, value, ttlSeconds) {
   if (!isEnabled()) return;
-  cache.set(key, value);
+  if (ttlSeconds !== undefined) {
+    cache.set(key, value, ttlSeconds);
+  } else {
+    cache.set(key, value);
+  }
 }
 
 function getStats() {
@@ -28,4 +32,29 @@ function getKeys() {
   return cache.keys();
 }
 
-module.exports = { get, set, isEnabled, getStats, getKeys };
+function del(key) {
+  if (!isEnabled()) return false;
+  return cache.del(key);
+}
+
+function delPattern(pattern) {
+  if (!isEnabled()) return 0;
+  const keys = cache.keys();
+  const regex = new RegExp(pattern);
+  let deleted = 0;
+  keys.forEach((key) => {
+    if (regex.test(key)) {
+      if (cache.del(key)) {
+        deleted++;
+      }
+    }
+  });
+  return deleted;
+}
+
+function flushAll() {
+  if (!isEnabled()) return;
+  cache.flushAll();
+}
+
+module.exports = { get, set, isEnabled, getStats, getKeys, del, delPattern, flushAll };
