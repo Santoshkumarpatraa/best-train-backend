@@ -19,7 +19,7 @@ async function fetchTrainDetails(baseUrl, trainNumber) {
   const requestUrl = `${baseUrl}/${String(trainNumber).padStart(5, "0")}?greq=${greq}`;
   const headers = getBrowserHeaders({
     "Content-Type": "application/x-www-form-urlencoded",
-    Referer: `${customConfig.IRCTC_ORIGIN}/`,
+    Referer: `${customConfig.IRCTC_ORIGIN}/online-charts/`,
     Origin: customConfig.IRCTC_ORIGIN,
     greq: String(greq),
   });
