@@ -60,6 +60,8 @@ Create `.env` file in the project root:
 PORT=8000
 NODE_ENV=production
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/best_train
+DATASTORE_PORT=5432
+DATASTORE_CONNECTION_LIMIT=5000
 TRAIN_LIST_URL=https://www.irctc.co.in/eticketing/trainList
 TRAIN_DETAILS_URL=https://www.irctc.co.in/eticketing/protected/mapps1/trnscheduleenquiry
 SYNC_STATION_URL=https://cdn.corover.ai/askdisha-bucket/stationupdated.json
@@ -71,11 +73,11 @@ CACHE_TTL_SECONDS=300
 SYNC_TRAIN_DELAY_MS=50
 ```
 
-**For Render deployment, update `DATABASE_URL`:**
+**For production deployment, update `DATABASE_URL`:**
 ```env
 DATABASE_URL=postgresql://USERNAME:PASSWORD@HOST:PORT/DBNAME
-# Example: postgresql://best_train_user:ABDmQRg5yUHSrx4QQSH4uJ4rBXLfyo3p@dpg-d8gn5t3bc2fs73epdbbg-a.singapore-postgres.render.com/best_train
 ```
+
 
 ### 4. Database Setup
 
@@ -99,7 +101,7 @@ npm run sync:train-details    # Fetch route details for each train (~15 mins)
 
 This will populate your local database with all train and station data.
 
-### 6. Database Backup & Restore to Render
+### 6. Database Backup & Restore for Production
 
 After syncing data locally:
 
@@ -110,25 +112,18 @@ pg_dump -U postgres best_train > backup.sql
 
 This creates a `backup.sql` file (~2.3 MB) with all your data.
 
-**Step 2: Get your Render PostgreSQL URL**
-- Go to [Render Dashboard](https://dashboard.render.com)
-- Click **PostgreSQL** → your database name
-- Go to **Info** tab
+**Step 2: Get your production database URL**
+- Open your hosting provider dashboard
 - Copy the **External Database URL**
 
-**Step 3: Restore to Render**
+**Step 3: Restore to production**
 ```bash
 psql "postgresql://USERNAME:PASSWORD@HOST:PORT/DBNAME" < backup.sql
 ```
 
-Example:
+**Step 4: Verify deployment**
 ```bash
-psql "postgresql://best_train_user:ABDmQRg5yUHSrx4QQSH4uJ4rBXLfyo3p@dpg-d8gn5tc2fs73epdbbg-a.singapore-postgres.render.com/best_train" < backup.sql
-```
-
-**Step 3: Verify on Render**
-```bash
-curl -X POST "https://your-render-domain.onrender.com/station/list" \
+curl -X POST "https://your-deployment-domain.com/station/list" \
   -H "Content-Type: application/json" \
   -d '{"search":"Delhi","limit":5}'
 ```
@@ -427,7 +422,7 @@ Mapping between places and their associated stations (rank 1 = primary).
 |----------|-------------|---------|
 | `PORT` | Server port | 3000 |
 | `NODE_ENV` | Environment (development/production) | production |
-| `DATABASE_URL` | PostgreSQL connection string (local or Render) | postgresql://postgres:postgres@localhost:5432/best_train |
+| `DATABASE_URL` | PostgreSQL connection string (local or hosted environment) | postgresql://postgres:postgres@localhost:5432/best_train |
 | `TRAIN_LIST_URL` | External API endpoint for train list | – |
 | `TRAIN_DETAILS_URL` | External API base URL for train details | – |
 | `SYNC_STATION_URL` | Stations data JSON URL | – |
@@ -486,23 +481,23 @@ best-train-backend/
     └── ARCHITECTURE.md        # Detailed architecture
 ```
 
-## Deployment to Render
+## Deployment
 
-### 1. Create PostgreSQL Database on Render
-- Dashboard → Create New → PostgreSQL
+### 1. Create PostgreSQL Database
+- Dashboard → Create new database
 - Copy the **External Database URL** (format: `postgresql://user:password@host:port/dbname`)
 - Save this URL
 
 ### 2. Deploy Node App
-- Connect GitHub repo to Render
+- Connect GitHub repo to your hosting provider
 - Set environment variables:
-  - `DATABASE_URL`: Your Render PostgreSQL External Database URL
+  - `DATABASE_URL`: Your production database URL
   - `PORT`: 8000
   - `NODE_ENV`: production
   - Other config as needed (see Environment Variables section)
 
 ### 3. Populate Database with Data
-**Important**: Sync data on your **local machine first**, then backup and restore to Render.
+**Important**: Sync data on your **local machine first**, then backup and restore to production.
 
 ```bash
 # On your local machine:
@@ -514,19 +509,19 @@ npm run sync:train-details
 # Backup
 pg_dump -U postgres best_train > backup.sql
 
-# Restore to Render (get the External Database URL from Render dashboard)
+# Restore to production (get the external database URL from your hosting dashboard)
 psql "postgresql://USERNAME:PASSWORD@HOST:PORT/DBNAME" < backup.sql
 ```
 
 ### 4. Verify Deployment
 ```bash
-curl -X POST "https://your-app.onrender.com/station/list" \
+curl -X POST "https://your-deployment-domain.com/station/list" \
   -H "Content-Type: application/json" \
   -d '{"search":"Delhi","limit":5}'
 ```
 
 ### Why Sync Locally First?
-- External data sources apply anti-bot protection to datacenter IPs (including Render)
+- External data sources apply anti-bot protection to datacenter IPs (including hosted environments)
 - Local residential IPs are trusted and work reliably
 - Syncing locally ensures all 6,334 trains and their routes are loaded
 - Backup/restore is fast and reliable (~2-3 minutes)
@@ -556,8 +551,8 @@ curl -X POST "https://your-app.onrender.com/station/list" \
 
 ### Timeouts on External API Calls
 - Normal behavior due to datacenter IP restrictions on external services
-- Solution: Sync data locally on your machine, then backup and restore to Render
-- No need to run sync scripts on Render production; just restore from backup
+- Solution: Sync data locally on your machine, then backup and restore to the production database
+- No need to run sync scripts in production; just restore from backup
 
 ## License
 
