@@ -2,28 +2,65 @@ require("dotenv").config();
 require("../config/globals");
 const pg = require("pg");
 const { getBrowserHeaders } = require("../services/browserHeaders");
-const { chunk, toIntOrNull } = require("./utils");
+const { chunk, toIntOrNull, sleep } = require("./utils");
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 45000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 async function fetchTrainList(url) {
   const greq = Math.floor(Date.now() / 1000);
-  const res = await fetch(`${url}?greq=${greq}`, {
-    method: "GET",
-    headers: getBrowserHeaders({
-      "Content-Type": "application/x-www-form-urlencoded",
-      Referer: `${customConfig.IRCTC_ORIGIN}/`,
-      Origin: customConfig.IRCTC_ORIGIN,
-      greq: String(greq),
-    }),
+  const requestUrl = `${url}?greq=${greq}`;
+  const headers = getBrowserHeaders({
+    "Content-Type": "application/x-www-form-urlencoded",
+    Referer: `${customConfig.IRCTC_ORIGIN}/`,
+    Origin: customConfig.IRCTC_ORIGIN,
+    greq: String(greq),
   });
-  if (!res.ok) {
-    throw new Error(
-      `Failed to fetch train list: ${res.status} ${res.statusText}`
-    );
+
+  const maxAttempts = 5;
+  const baseDelayMs = 2000;
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      // eslint-disable-next-line no-console
+      console.log(`Attempt ${attempt}/${maxAttempts}: Fetching train list...`);
+      const res = await fetchWithTimeout(requestUrl, {
+        method: "GET",
+        headers,
+      }, 45000);
+
+      if (!res.ok) {
+        throw new Error(`Failed to fetch train list: ${res.status} ${res.statusText}`);
+      }
+
+      const text = await res.text();
+      const json = text.trim() ? `[${text.trim()}]` : "[]";
+      return JSON.parse(json);
+    } catch (err) {
+      lastError = err;
+      // eslint-disable-next-line no-console
+      console.error(`Attempt ${attempt} failed:`, err.message);
+      if (attempt < maxAttempts) {
+        const delayMs = baseDelayMs * attempt;
+        // eslint-disable-next-line no-console
+        console.log(`Retrying in ${delayMs}ms...`);
+        await sleep(delayMs);
+      }
+    }
   }
-  const text = await res.text();
-  // API returns "item1","item2","item3" - wrap in brackets for valid JSON array
-  const json = text.trim() ? `[${text.trim()}]` : "[]";
-  return JSON.parse(json);
+
+  // After all retries fail, log the error but don't throw - allow script to continue
+  // eslint-disable-next-line no-console
+  console.error(`All ${maxAttempts} fetch attempts failed. Continuing with empty train list.`);
+  return [];
 }
 
 /**

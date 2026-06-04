@@ -4,23 +4,49 @@ const pg = require("pg");
 const { getBrowserHeaders } = require("../services/browserHeaders");
 const { toIntOrNull, toStringOrNull, toBool, sleep } = require("./utils");
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 45000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function fetchTrainDetails(baseUrl, trainNumber) {
   const greq = Math.floor(Date.now() / 1000);
-  const res = await fetch(
-    `${baseUrl}/${String(trainNumber).padStart(5, "0")}?greq=${greq}`,
-    {
-      method: "GET",
-      headers: getBrowserHeaders({
-        "Content-Type": "application/x-www-form-urlencoded",
-        Referer: `${customConfig.IRCTC_ORIGIN}/`,
-        Origin: customConfig.IRCTC_ORIGIN,
-        greq: String(greq),
-      }),
-    },
-  );
-  if (!res.ok)
-    throw new Error(`Train ${trainNumber}: ${res.status} ${res.statusText}`);
-  return res.json();
+  const requestUrl = `${baseUrl}/${String(trainNumber).padStart(5, "0")}?greq=${greq}`;
+  const headers = getBrowserHeaders({
+    "Content-Type": "application/x-www-form-urlencoded",
+    Referer: `${customConfig.IRCTC_ORIGIN}/`,
+    Origin: customConfig.IRCTC_ORIGIN,
+    greq: String(greq),
+  });
+
+  const maxAttempts = 3;
+  const baseDelayMs = 1000;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetchWithTimeout(requestUrl, {
+        method: "GET",
+        headers,
+      }, 45000);
+
+      if (!res.ok) {
+        throw new Error(`Train ${trainNumber}: ${res.status} ${res.statusText}`);
+      }
+      return await res.json();
+    } catch (err) {
+      if (attempt < maxAttempts) {
+        const delayMs = baseDelayMs * attempt;
+        await sleep(delayMs);
+      }
+    }
+  }
+
+  return null;
 }
 
 async function updateTrainAndRoute(client, trainId, data) {
@@ -277,7 +303,11 @@ async function main() {
     try {
       const json = await fetchTrainDetails(baseUrl, train_number);
 
-      if (json.errorMessage) {
+      if (json === null) {
+        skipped++;
+        // eslint-disable-next-line no-console
+        console.log(`[${train_number}] skipped: failed to fetch after retries`);
+      } else if (json.errorMessage) {
         skipped++;
         // eslint-disable-next-line no-console
         console.log(`[${train_number}] skipped: ${json.errorMessage}`);

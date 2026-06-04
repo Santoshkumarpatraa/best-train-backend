@@ -118,7 +118,13 @@ async function runSyncScripts() {
 
   const results = [];
   for (const scriptName of scriptList) {
-    results.push(await runScript(scriptName));
+    try {
+      const result = await runScript(scriptName);
+      results.push({ scriptName, status: "success", ...result });
+    } catch (err) {
+      LogService.error(`Script ${scriptName} failed`, err.message || err);
+      results.push({ scriptName, status: "failed", error: err.message || String(err) });
+    }
   }
   return results;
 }
@@ -128,9 +134,14 @@ module.exports = {
     try {
       const sqlResults = await runAllInitialSqlFiles();
       const scriptResults = await runSyncScripts();
+      const failedScripts = scriptResults.filter((r) => r.status === "failed");
+      const statusCode = failedScripts.length ? 207 : 200;
+      const message = failedScripts.length
+        ? "Initialization completed with script failures."
+        : "Initialization completed successfully.";
 
-      return res.status(200).json({
-        message: "Initialization completed successfully.",
+      return res.status(statusCode).json({
+        message,
         sqlResults,
         scriptResults,
       });
