@@ -78,7 +78,6 @@ SYNC_TRAIN_DELAY_MS=50
 DATABASE_URL=postgresql://USERNAME:PASSWORD@HOST:PORT/DBNAME
 ```
 
-
 ### 4. Database Setup
 
 Create database and initialize schema:
