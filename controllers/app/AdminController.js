@@ -29,22 +29,12 @@ async function getInitialSqlFiles() {
 async function runSqlFile(client, fileName) {
   const filepath = path.join(sqlDir, fileName);
   const rawSql = await fs.promises.readFile(filepath, "utf8");
-  const statements = rawSql
-    .split(/;\s*(?:\r?\n|$)/)
-    .map((stmt) => stmt.trim())
-    .filter(Boolean);
-
-  if (statements.length === 0) {
-    return { fileName, statements: 0 };
-  }
 
   await client.query("BEGIN");
   try {
-    for (const statement of statements) {
-      await client.query(statement);
-    }
+    await client.query(rawSql);
     await client.query("COMMIT");
-    return { fileName, statements: statements.length };
+    return { fileName, size: rawSql.length };
   } catch (err) {
     await client.query("ROLLBACK");
     throw new Error(`Failed to execute ${fileName}: ${err.message}`);
@@ -83,17 +73,17 @@ async function runScript(scriptName) {
     let stderr = "";
 
     const child = spawn(command, args, options);
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
 
-    child.stdout.on("data", (chunk) => {
-      const text = String(chunk);
+    child.stdout.on("data", (text) => {
       stdout += text;
       for (const line of text.split(/\r?\n/).filter(Boolean)) {
         LogService.info(`Script ${scriptName}: ${line}`);
       }
     });
 
-    child.stderr.on("data", (chunk) => {
-      const text = String(chunk);
+    child.stderr.on("data", (text) => {
       stderr += text;
       for (const line of text.split(/\r?\n/).filter(Boolean)) {
         LogService.error(`Script ${scriptName}: ${line}`);
