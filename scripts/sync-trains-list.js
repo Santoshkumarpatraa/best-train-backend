@@ -19,7 +19,7 @@ async function fetchTrainList(url) {
   const requestUrl = `${url}?greq=${greq}`;
   const headers = getBrowserHeaders({
     "Content-Type": "application/x-www-form-urlencoded",
-    Referer: `${customConfig.IRCTC_ORIGIN}/`,
+    Referer: `${customConfig.IRCTC_ORIGIN}/online-charts/`,
     Origin: customConfig.IRCTC_ORIGIN,
     greq: String(greq),
   });
