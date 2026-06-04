@@ -25,4 +25,7 @@ router.get('/train/between/stations', require('../controllers/trains/TrainContro
 router.get('/train/between/states', require('../controllers/trains/TrainController').trainBetweenStates);
 router.get('/train/between/places', require('../controllers/trains/TrainController').trainBetweenPlaces);
 
+// Admin initialization API
+router.post('/admin/init', require('../controllers/app/AdminController').runInitialSqlAndScripts);
+
 module.exports = router;
