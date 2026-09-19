@@ -1,7 +1,7 @@
 /**
  * Response helpers.
- * - jsonResponse: success/validation (200, 400) – sends { message?, data? }
- * - json: server error (500) – logs, overrides message, sends { message }
+ * - jsonResponse: success/validation (200, 400) - sends { message?, data? }
+ * - json: server error (500) - logs, overrides message, sends { message }
  */
 module.exports = {
     /**

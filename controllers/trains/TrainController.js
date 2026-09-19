@@ -45,6 +45,75 @@ function sortTrains(trains, sort, order) {
 
 module.exports = {
     /**
+     * Suggest trains by number prefix, for the home-screen lookup.
+     * API Endpoint :   /train/search
+     * API Method   :   GET
+     *
+     * @param   {Object}        req          Request Object From API Request.
+     * @param   {Object}        res          Response Object For API Request.
+     * @returns {Promise<*>}    JSONResponse With success code 200 and matching trains or relevant error code with message.
+     */
+    trainSearch: async (req, res) => {
+        try {
+            LogService.info("====================== TRAIN SEARCH API ==============================");
+            LogService.info("REQ QUERY : ", { ...req.query });
+
+            const schema = Joi.object().keys({
+                q: Joi.string().required().pattern(/^\d{2,5}$/),
+                limit: Joi.number().integer().min(1).max(25).optional().default(10),
+            });
+            const { error, value } = schema.validate(
+                { q: req.query.q, limit: req.query.limit },
+                { abortEarly: false, stripUnknown: true },
+            );
+            if (error) {
+                return ResponseService.jsonResponse(res, ConstantService.responseCode.BAD_REQUEST, { message: error.message });
+            }
+
+            const cacheKey = `train:search:${value.q}:${value.limit}`;
+            const cached = CacheService.get(cacheKey);
+            if (cached) {
+                LogService.info(`[CACHE HIT] ${cacheKey}`);
+                return ResponseService.jsonResponse(res, ConstantService.responseCode.SUCCESS, cached);
+            }
+
+            // Padded form only: matching raw digits too would make "12" return 01201.
+            const result = await SqlService.executeQuery(
+                `SELECT LPAD(train_number::text, 5, '0') AS train_number, train_name,
+                        station_from, station_to, duration
+                 FROM trains
+                 WHERE LPAD(train_number::text, 5, '0') LIKE $1 || '%'
+                 ORDER BY train_number
+                 LIMIT $2`,
+                [value.q, value.limit],
+            );
+
+            const response = {
+                message: "Trains fetched successfully",
+                data: {
+                    query: value.q,
+                    trains: result.rows.map((r) => ({
+                        train_number: r.train_number,
+                        train_name: r.train_name,
+                        station_from: r.station_from || null,
+                        station_to: r.station_to || null,
+                        duration: r.duration || null,
+                    })),
+                },
+            };
+
+            // Keyed off typed text, so it earns only a short slice of the cache budget.
+            CacheService.set(cacheKey, response, customConfig.CACHE_SUGGEST_TTL_SECONDS);
+            return ResponseService.jsonResponse(res, ConstantService.responseCode.SUCCESS, response);
+        } catch (exception) {
+            LogService.error(exception);
+            return ResponseService.jsonResponse(res, ConstantService.responseCode.INTERNAL_SERVER_ERROR, {
+                message: ConstantService.responseMessage.somethingWentWrong,
+            });
+        }
+    },
+
+    /**
      * Find trains between two stations.
      * API Endpoint :   /train/between/stations
      * API Method   :   GET

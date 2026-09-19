@@ -22,6 +22,7 @@ router.get('/place/list', require('../controllers/places/PlaceController').place
 router.get('/place/suggest', require('../controllers/places/PlaceController').placeSuggest);
 
 // Train APIs
+router.get('/train/search', require('../controllers/trains/TrainController').trainSearch);
 router.get('/train/:number/route', require('../controllers/trains/TrainController').trainRoute);
 router.get('/train/between/stations', require('../controllers/trains/TrainController').trainBetweenStations);
 router.get('/train/between/states', require('../controllers/trains/TrainController').trainBetweenStates);

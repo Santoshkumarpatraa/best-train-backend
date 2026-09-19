@@ -182,7 +182,7 @@ curl -X POST http://localhost:8000/station/list \
 
 ### Place APIs
 
-**POST** `/place/add` – Create a new place
+**POST** `/place/add` - Create a new place
 
 ```bash
 curl -X POST http://localhost:8000/place/add \
@@ -199,7 +199,7 @@ curl -X POST http://localhost:8000/place/add \
   }'
 ```
 
-**PUT** `/place/:id` – Update a place
+**PUT** `/place/:id` - Update a place
 
 ```bash
 curl -X PUT http://localhost:8000/place/1 \
@@ -210,13 +210,13 @@ curl -X PUT http://localhost:8000/place/1 \
   }'
 ```
 
-**DELETE** `/place/:id` – Delete a place
+**DELETE** `/place/:id` - Delete a place
 
 ```bash
 curl -X DELETE http://localhost:8000/place/1
 ```
 
-**GET** `/place/list` – List all places
+**GET** `/place/list` - List all places
 
 ```bash
 curl "http://localhost:8000/place/list?search=Delhi&limit=10"
@@ -224,7 +224,7 @@ curl "http://localhost:8000/place/list?search=Delhi&limit=10"
 
 ### Train Search
 
-**GET** `/train/between/stations` – Search trains between station codes
+**GET** `/train/between/stations` - Search trains between station codes
 
 ```bash
 curl "http://localhost:8000/train/between/stations?from=NDLS&to=BCT&date=2026-06-05&limit=10&sort=duration&order=asc"
@@ -269,7 +269,7 @@ curl "http://localhost:8000/train/between/stations?from=NDLS&to=BCT&date=2026-06
 }
 ```
 
-**GET** `/train/between/states` – Search trains between states
+**GET** `/train/between/states` - Search trains between states
 
 ```bash
 curl "http://localhost:8000/train/between/states?from_state=West%20Bengal&to_state=Maharashtra&date=2026-06-05&limit=20"
@@ -283,7 +283,7 @@ curl "http://localhost:8000/train/between/states?from_state=West%20Bengal&to_sta
 - `sort` (string): Sort by "duration", "departure_time", or "arrival_time"
 - `order` (string): Sort order "asc" or "desc"
 
-**GET** `/train/between/places` – Search trains between places
+**GET** `/train/between/places` - Search trains between places
 
 ```bash
 curl "http://localhost:8000/train/between/places?from=Delhi&to=Mumbai&date=2026-06-05&limit=20"
@@ -299,31 +299,31 @@ curl "http://localhost:8000/train/between/places?from=Delhi&to=Mumbai&date=2026-
 
 ### Cache Management
 
-**GET** `/cache/stats` – Get cache statistics
+**GET** `/cache/stats` - Get cache statistics
 
 ```bash
 curl http://localhost:8000/cache/stats
 ```
 
-**GET** `/cache/keys` – List all cache keys
+**GET** `/cache/keys` - List all cache keys
 
 ```bash
 curl http://localhost:8000/cache/keys
 ```
 
-**DELETE** `/cache/clear` – Clear all cache
+**DELETE** `/cache/clear` - Clear all cache
 
 ```bash
 curl -X DELETE http://localhost:8000/cache/clear
 ```
 
-**DELETE** `/cache/delete/:key` – Delete a specific cache key
+**DELETE** `/cache/delete/:key` - Delete a specific cache key
 
 ```bash
 curl -X DELETE http://localhost:8000/cache/delete/train:NDLS:BCT
 ```
 
-**POST** `/cache/delete-pattern` – Delete cache by pattern
+**POST** `/cache/delete-pattern` - Delete cache by pattern
 
 ```bash
 curl -X POST http://localhost:8000/cache/delete-pattern \
@@ -422,10 +422,10 @@ Mapping between places and their associated stations (rank 1 = primary).
 | `PORT` | Server port | 3000 |
 | `NODE_ENV` | Environment (development/production) | production |
 | `DATABASE_URL` | PostgreSQL connection string (local or hosted environment) | postgresql://postgres:postgres@localhost:5432/best_train |
-| `TRAIN_LIST_URL` | External API endpoint for train list | – |
-| `TRAIN_DETAILS_URL` | External API base URL for train details | – |
-| `SYNC_STATION_URL` | Stations data JSON URL | – |
-| `SYNC_POPULAR_URL` | Popular stations data JSON URL | – |
+| `TRAIN_LIST_URL` | External API endpoint for train list | - |
+| `TRAIN_DETAILS_URL` | External API base URL for train details | - |
+| `SYNC_STATION_URL` | Stations data JSON URL | - |
+| `SYNC_POPULAR_URL` | Popular stations data JSON URL | - |
 | `CORS_ORIGIN` | Allowed CORS origins (comma-separated or *) | * |
 | `RATE_LIMIT_WINDOW_MS` | Rate limit window duration | 60000 |
 | `RATE_LIMIT_MAX` | Max requests per window | 100 |

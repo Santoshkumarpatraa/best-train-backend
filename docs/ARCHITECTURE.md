@@ -1,4 +1,4 @@
-# Best Train – Architecture & Structure
+# Best Train - Architecture & Structure
 
 ## Overview
 
@@ -80,7 +80,7 @@ Best Train is a Node.js/Express backend for Indian railway train and station dat
 │  DELETE /place/:id       → PlaceController.placeDelete                       │
 │  GET    /place/list      → PlaceController.placeList                         │
 │  GET  /train/between       → TrainController.trainBetweenPlaces              │
-│       (from/to: place, station code, or state – resolved via PlaceService)   │
+│       (from/to: place, station code, or state - resolved via PlaceService)   │
 │  GET  /train/between/stations → TrainController.trainBetweenStations         │
 │       (from/to: station codes only)                                          │
 │  GET  /train/between/states   → TrainController.trainBetweenStates           │
@@ -92,7 +92,7 @@ Best Train is a Node.js/Express backend for Indian railway train and station dat
 
 ## Database Schema (Detailed)
 
-### 1. `trains` – Master train info
+### 1. `trains` - Master train info
 
 | Column          | Type        | Description                     |
 |-----------------|-------------|---------------------------------|
@@ -112,12 +112,12 @@ Best Train is a Node.js/Express backend for Indian railway train and station dat
 
 ---
 
-### 2. `train_route` – Stops along each train’s path
+### 2. `train_route` - Stops along each train’s path
 
 | Column            | Type      | API Source        | Description |
 |-------------------|-----------|-------------------|-------------|
-| `id`              | BIGSERIAL | –                 | Primary key |
-| `train_id`        | BIGINT    | –                 | FK → trains.id |
+| `id`              | BIGSERIAL | -                 | Primary key |
+| `train_id`        | BIGINT    | -                 | FK → trains.id |
 | `station_code`    | TEXT      | stationCode       | e.g. HWH, BWN |
 | `station_name`    | TEXT      | stationName       | e.g. HOWRAH JN |
 | `arrival_time`    | TEXT      | arrivalTime       | "08:55" or "--" |
@@ -128,7 +128,7 @@ Best Train is a Node.js/Express backend for Indian railway train and station dat
 | `day_count`       | INTEGER   | dayCount          | Day of journey (1, 2, …) |
 | `serial_number`   | INTEGER   | stnSerialNumber   | Order in route (1st, 2nd, …) |
 | `boarding_disabled` | BOOLEAN | boardingDisabled   | "false"/"true" |
-| `created_at`      | TIMESTAMPTZ | –               | Row creation |
+| `created_at`      | TIMESTAMPTZ | -               | Row creation |
 
 **Indexes:** `train_id`, `station_code`, unique `(train_id, serial_number)`
 
@@ -136,7 +136,7 @@ Best Train is a Node.js/Express backend for Indian railway train and station dat
 
 ---
 
-### 3. `stations` – Station master data
+### 3. `stations` - Station master data
 
 | Column       | Type    | Description |
 |--------------|---------|-------------|
@@ -156,7 +156,7 @@ Best Train is a Node.js/Express backend for Indian railway train and station dat
 
 ---
 
-### 4. `places` – Popular places (cities, landmarks)
+### 4. `places` - Popular places (cities, landmarks)
 
 | Column        | Type    | Description |
 |---------------|---------|-------------|
@@ -166,14 +166,14 @@ Best Train is a Node.js/Express backend for Indian railway train and station dat
 | `state`       | TEXT    | State name |
 | `description`  | TEXT    | Optional description |
 | `image_url`   | TEXT    | Optional image URL |
-| `location`    | POINT   | (lng, lat) – optional |
+| `location`    | POINT   | (lng, lat) - optional |
 | `created_at`  | TIMESTAMPTZ | Row creation |
 
 **Indexes:** unique on `LOWER(TRIM(name))`, `name`, `state`
 
 ---
 
-### 5. `place_stations` – Place → station mapping
+### 5. `place_stations` - Place → station mapping
 
 | Column        | Type    | Description |
 |---------------|---------|-------------|
@@ -313,7 +313,7 @@ backend/
 
 ## Train APIs
 
-### 1. `GET /train/between` – Place / station / state resolution
+### 1. `GET /train/between` - Place / station / state resolution
 
 Resolves `from` and `to` via PlaceService: station code (NDLS), place name (Delhi, Taj Mahal), or state name (Maharashtra). Returns trains between resolved station pairs.
 
@@ -321,14 +321,14 @@ Resolves `from` and `to` via PlaceService: station code (NDLS), place name (Delh
 |--------|--------|----------|-------------|
 | from   | string | ✓        | Source: station code, place name, or state |
 | to     | string | ✓        | Destination: station code, place name, or state |
-| date   | string |          | YYYY-MM-DD – filter by day |
+| date   | string |          | YYYY-MM-DD - filter by day |
 | limit  | number |          | Page size (default 30, max 100) |
 | sort   | string |          | `duration`, `departure_time`, `arrival_time` (default: duration) |
 | order  | string |          | `asc`, `desc` (default: asc) |
 
 ---
 
-### 2. `GET /train/between/stations` – Station codes only
+### 2. `GET /train/between/stations` - Station codes only
 
 Direct station-to-station search. `from` and `to` must be station codes (e.g. HWH, NDLS).
 
@@ -336,7 +336,7 @@ Direct station-to-station search. `from` and `to` must be station codes (e.g. HW
 |--------|--------|----------|-------------|
 | from   | string | ✓        | Source station code (e.g. HWH) |
 | to     | string | ✓        | Destination station code (e.g. NDLS), must differ from from |
-| date   | string |          | YYYY-MM-DD – filter by day; when present, adds `alternate_days` |
+| date   | string |          | YYYY-MM-DD - filter by day; when present, adds `alternate_days` |
 | skip   | number |          | Pagination offset (default 0) |
 | limit  | number |          | Page size (default 20, max 100) |
 | sort   | string |          | `duration`, `departure_time`, `arrival_time` |
@@ -362,7 +362,7 @@ Direct station-to-station search. `from` and `to` must be station codes (e.g. HW
 
 ---
 
-### 3. `GET /train/between/states` – State names only
+### 3. `GET /train/between/states` - State names only
 
 Returns trains between top stations in each state.
 
@@ -386,7 +386,7 @@ Add or update a place (city, landmark) with linked stations.
 **Body:** `{ name, display_name?, state?, description?, image_url?, lat?, lng?, stations: [station_code, ...] }`
 
 - `name` (required): Place name (unique, case-insensitive)
-- `stations` (required): Array of station codes (1–20)
+- `stations` (required): Array of station codes (1 - 20)
 - `lat`, `lng`: Optional location (POINT)
 - If place exists: updates description, image_url, location, and replaces station links
 

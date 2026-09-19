@@ -28,7 +28,7 @@ LogService.info("REQ BODY : ", req.body);     // POST
 
 ### 3. Request Object
 
-Build from `req.query` (GET) or `req.body` (POST). Pass raw values only—no defaults.
+Build from `req.query` (GET) or `req.body` (POST). Pass raw values only - no defaults.
 
 ### 4. Validation (Joi Only)
 
@@ -64,5 +64,5 @@ Error (catch): `ResponseService.json(res, ConstantService.responseCode.INTERNAL_
 
 ### 10. Reference
 
-- `controllers/trains/TrainController.js` – GET, complex queries, nearby search
-- `controllers/stations/StationController.js` – POST, list with filters, pagination
+- `controllers/trains/TrainController.js` - GET, complex queries, nearby search
+- `controllers/stations/StationController.js` - POST, list with filters, pagination
