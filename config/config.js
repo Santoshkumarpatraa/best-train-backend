@@ -42,4 +42,10 @@ module.exports = {
     ? parseInt(process.env.CACHE_TTL_SECONDS, 10)
     : 300,
   CACHE_ENABLED: process.env.CACHE_ENABLED !== "false",
+  CACHE_MAX_KEYS: process.env.CACHE_MAX_KEYS
+    ? parseInt(process.env.CACHE_MAX_KEYS, 10)
+    : 5000,
+  CACHE_SUGGEST_TTL_SECONDS: process.env.CACHE_SUGGEST_TTL_SECONDS
+    ? parseInt(process.env.CACHE_SUGGEST_TTL_SECONDS, 10)
+    : 600,
 };

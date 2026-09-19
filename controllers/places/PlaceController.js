@@ -1,4 +1,76 @@
+/*
+ * Catalogue-wide counts shown beside the suggestions. They do not depend on the
+ * query, so they get one cache entry of their own rather than being recomputed
+ * and re-stored under every distinct search string.
+ */
+async function catalogueTotals() {
+    const cached = CacheService.get("place:suggest:totals");
+    if (cached) return cached;
+    const stats = await SqlService.executeQuery(
+        `SELECT (SELECT COUNT(*) FROM stations)::int AS stations,
+                (SELECT COUNT(*) FROM trains)::int AS trains,
+                (SELECT COUNT(*) FROM places WHERE kind IN ('city','place'))::int AS destinations`,
+    );
+    const totals = stats.rows[0] || {};
+    CacheService.set("place:suggest:totals", totals, 24 * 60 * 60);
+    return totals;
+}
+
 module.exports = {
+    /**
+     * Typed autocomplete over cities, landmarks, districts, states and stations.
+     * API Endpoint :   /place/suggest
+     * API Method   :   GET
+     */
+    placeSuggest: async (req, res) => {
+        try {
+            LogService.info("====================== PLACE SUGGEST API ==============================");
+            LogService.info("REQ QUERY : ", { ...req.query });
+
+            const schema = Joi.object().keys({
+                q: Joi.string().allow("").max(100).optional().default(""),
+                limit: Joi.number().integer().min(1).max(25).optional().default(10),
+            });
+            const { error, value } = schema.validate(
+                { q: req.query.q, limit: req.query.limit },
+                { abortEarly: false, stripUnknown: true },
+            );
+            if (error) {
+                return ResponseService.jsonResponse(res, ConstantService.responseCode.BAD_REQUEST, { message: error.message });
+            }
+
+            /*
+             * Keyed off arbitrary user text and hit once per keystroke, so this
+             * entry is short-lived by design - CacheService caps the key count,
+             * and a long TTL here would spend that budget on strings nobody
+             * types twice.
+             */
+            const cacheKey = `place:suggest:${value.q.toLowerCase()}:${value.limit}`;
+            const cached = CacheService.get(cacheKey);
+            if (cached) return ResponseService.jsonResponse(res, ConstantService.responseCode.SUCCESS, cached);
+
+            const [suggestions, totals] = await Promise.all([
+                PlaceService.suggest(value.q, value.limit),
+                catalogueTotals(),
+            ]);
+            const response = {
+                message: "Suggestions fetched successfully",
+                data: {
+                    query: value.q,
+                    suggestions,
+                    totalStations: totals.stations || 0,
+                    totalTrains: totals.trains || 0,
+                    totalDestinations: totals.destinations || 0,
+                },
+            };
+            CacheService.set(cacheKey, response, customConfig.CACHE_SUGGEST_TTL_SECONDS);
+            return ResponseService.jsonResponse(res, ConstantService.responseCode.SUCCESS, response);
+        } catch (exception) {
+            LogService.error(exception);
+            return ResponseService.json(res, ConstantService.responseCode.INTERNAL_SERVER_ERROR, ConstantService.responseMessage.ERR_OOPS_SOMETHING_WENT_WRONG);
+        }
+    },
+
     /**
      * Add a new place.
      * API Endpoint :   /place/add

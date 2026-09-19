@@ -1,4 +1,17 @@
 /**
+ * Wraps a TEXT time column in a guarded cast.
+ *
+ * arrival_time / departure_time are TEXT. The sync maps the feed's "--" sentinel
+ * to NULL, but rows written before that normalisation still hold "--", and a bare
+ * ::time cast on one of them aborts the whole query - a single bad row would 500
+ * an entire search. Guarding it costs one duration instead.
+ *
+ * @param {string} col - Column reference, e.g. "from_stop.departure_time"
+ * @returns {string} - SQL expression yielding time or NULL
+ */
+const asTime = (col) => `(CASE WHEN ${col} ~ '^[0-9]{1,2}:[0-9]{2}(:[0-9]{2})?$' THEN ${col}::time ELSE NULL END)`;
+
+/**
  * Helper function to sort trains array by duration, departure_time, or arrival_time.
  * @param {Array} trains - Array of train objects to sort
  * @param {string} sort - Sort field: "duration", "departure_time", or "arrival_time"
@@ -98,15 +111,17 @@ module.exports = {
 
             // Duration in minutes: (arrival_time + day_offset) - departure_time
             // Handle NULL day_count: NULL defaults to 1 (first day of journey)
+            const DEP = asTime("from_stop.departure_time");
+            const ARR = asTime("to_stop.arrival_time");
             const DURATION_MINS = `(
-                EXTRACT(EPOCH FROM (to_stop.arrival_time::time)) / 60
+                EXTRACT(EPOCH FROM ${ARR}) / 60
                 + GREATEST(0, COALESCE(to_stop.day_count, 1) - COALESCE(from_stop.day_count, 1)) * 24 * 60
-                - EXTRACT(EPOCH FROM (from_stop.departure_time::time)) / 60
+                - EXTRACT(EPOCH FROM ${DEP}) / 60
             )`;
             const sortExpr = {
                 duration: DURATION_MINS,
-                departure_time: "from_stop.departure_time::time",
-                arrival_time: "to_stop.arrival_time::time",
+                departure_time: DEP,
+                arrival_time: ARR,
             };
             const orderBy = `${sortExpr[sort]} ${order.toUpperCase()} NULLS LAST, t.train_number`;
 
@@ -217,18 +232,22 @@ module.exports = {
             if (!fromToRow || !fromToRow.from_name || !fromToRow.to_name) {
                 // Query returned no rows - could be missing stations or invalid coordinates
                 // Check if stations exist first
+                // Postgres has no `=` for point, so comparing against '(0,0)'::point
+                // threw 42883 and turned every unknown station into a 500.
                 const stationCheckSQL = `
-                    SELECT code, name, 
-                        (location IS NULL OR location = '(0,0)'::point) AS has_invalid_coords
-                    FROM stations 
+                    SELECT code, name,
+                        (location IS NULL OR (location[0] = 0 AND location[1] = 0)) AS has_invalid_coords
+                    FROM stations
                     WHERE code = ANY(ARRAY[$1, $2])
                 `;
                 const stationCheckResult = await SqlService.executeQuery(stationCheckSQL, [from, to]);
                 const foundStations = stationCheckResult.rows || [];
 
-                if (foundStations.length === 0) {
+                const foundCodes = new Set(foundStations.map((s) => s.code));
+                const unknown = [from, to].filter((code) => !foundCodes.has(code));
+                if (unknown.length > 0) {
                     return ResponseService.jsonResponse(res, ConstantService.responseCode.BAD_REQUEST, {
-                        message: `Could not find stations: ${from} or ${to}`,
+                        message: `Unknown station code${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}`,
                     });
                 }
 
@@ -313,9 +332,26 @@ module.exports = {
                     ORDER BY ${orderBy}
                     LIMIT ${NEARBY_PAIR_TRAINS_LIMIT} OFFSET 0
                 `;
-                const pairResults = await Promise.all(
-                    pairs.map((p) => SqlService.executeQuery(pairSQL, [p.from_station.code, p.to_station.code]))
-                );
+                // Up to 35 pairs here. Firing them all at once starves the
+                // connection pool (max 10) and every laggard dies on the 5s
+                // acquire timeout, so run them in small waves instead.
+                const NEARBY_CONCURRENCY = 4;
+                const pairResults = [];
+                for (let i = 0; i < pairs.length; i += NEARBY_CONCURRENCY) {
+                    const wave = pairs.slice(i, i + NEARBY_CONCURRENCY);
+                    const settled = await Promise.allSettled(
+                        wave.map((p) => SqlService.executeQuery(pairSQL, [p.from_station.code, p.to_station.code]))
+                    );
+                    for (const outcome of settled) {
+                        if (outcome.status === "fulfilled") {
+                            pairResults.push(outcome.value);
+                        } else {
+                            // A nearby suggestion failing must not fail the search itself.
+                            LogService.error("Nearby pair query failed:", outcome.reason);
+                            pairResults.push({ rows: [] });
+                        }
+                    }
+                }
 
                 // Step 6d: Deduplicate - exclude trains already in main result, keep unique per nearby pair
                 const mainTrainNumbers = new Set(trains.map((t) => t.train_number));
@@ -534,15 +570,17 @@ module.exports = {
 
             // Duration in minutes: (arrival_time + day_offset) - departure_time
             // Handle NULL day_count: NULL defaults to 1 (first day of journey)
+            const DEP = asTime("from_stop.departure_time");
+            const ARR = asTime("to_stop.arrival_time");
             const DURATION_MINS = `(
-                EXTRACT(EPOCH FROM (to_stop.arrival_time::time)) / 60
+                EXTRACT(EPOCH FROM ${ARR}) / 60
                 + GREATEST(0, COALESCE(to_stop.day_count, 1) - COALESCE(from_stop.day_count, 1)) * 24 * 60
-                - EXTRACT(EPOCH FROM (from_stop.departure_time::time)) / 60
+                - EXTRACT(EPOCH FROM ${DEP}) / 60
             )`;
             const sortExpr = {
                 duration: DURATION_MINS,
-                departure_time: "from_stop.departure_time::time",
-                arrival_time: "to_stop.arrival_time::time",
+                departure_time: DEP,
+                arrival_time: ARR,
             };
             const orderBy = `${sortExpr[sort]} ${order.toUpperCase()} NULLS LAST, t.train_number`;
 
@@ -666,6 +704,109 @@ module.exports = {
     },
 
     /**
+     * Full stop-by-stop schedule for one train, with coordinates for mapping.
+     * API Endpoint :   /train/:number/route
+     * API Method   :   GET
+     */
+    trainRoute: async (req, res) => {
+        try {
+            LogService.info("====================== TRAIN ROUTE API ==============================");
+
+            const schema = Joi.object().keys({
+                number: Joi.string().required().pattern(/^\d{1,5}$/),
+            });
+            const { error, value } = schema.validate({ number: req.params.number }, { abortEarly: false, stripUnknown: true });
+            if (error) {
+                return ResponseService.jsonResponse(res, ConstantService.responseCode.BAD_REQUEST, { message: error.message });
+            }
+
+            const trainNumber = parseInt(value.number, 10);
+            const cacheKey = `train:route:${trainNumber}`;
+            const cached = CacheService.get(cacheKey);
+            if (cached) {
+                LogService.info(`[CACHE HIT] ${cacheKey}`);
+                return ResponseService.jsonResponse(res, ConstantService.responseCode.SUCCESS, cached);
+            }
+
+            const trainRes = await SqlService.executeQuery(
+                `SELECT id, LPAD(train_number::text, 5, '0') AS train_number, train_name, train_owner, duration,
+                        station_from, station_to,
+                        ARRAY[runs_on_mon::int, runs_on_tue::int, runs_on_wed::int,
+                              runs_on_thu::int, runs_on_fri::int, runs_on_sat::int, runs_on_sun::int] AS "runs_on"
+                 FROM trains WHERE train_number = $1`,
+                [trainNumber],
+            );
+            const train = trainRes.rows[0];
+            if (!train) {
+                return ResponseService.jsonResponse(res, ConstantService.responseCode.BAD_REQUEST, {
+                    message: `No train found with number ${value.number}`,
+                });
+            }
+
+            // location is a Postgres point; a few hundred stops have (0,0) and
+            // must come back as null so the map can skip them rather than
+            // drawing a line through the Gulf of Guinea.
+            const stopsRes = await SqlService.executeQuery(
+                `SELECT tr.serial_number, tr.station_code, tr.station_name,
+                        tr.arrival_time, tr.departure_time, tr.halt_time,
+                        tr.distance, tr.day_count, tr.route_number, tr.boarding_disabled,
+                        s.name AS canonical_name, s.state, s.district,
+                        CASE WHEN s.location IS NULL OR (s.location[0] = 0 AND s.location[1] = 0)
+                             THEN NULL ELSE s.location[0] END AS lng,
+                        CASE WHEN s.location IS NULL OR (s.location[0] = 0 AND s.location[1] = 0)
+                             THEN NULL ELSE s.location[1] END AS lat
+                 FROM train_route tr
+                 LEFT JOIN stations s ON s.code = tr.station_code
+                 WHERE tr.train_id = $1
+                 ORDER BY tr.serial_number`,
+                [train.id],
+            );
+
+            const stops = stopsRes.rows.map((r) => ({
+                serial: r.serial_number,
+                code: r.station_code,
+                name: r.canonical_name || r.station_name,
+                state: r.state || null,
+                district: r.district || null,
+                arrival: r.arrival_time,
+                departure: r.departure_time,
+                halt: r.halt_time,
+                distance: r.distance,
+                day: r.day_count,
+                routeNumber: r.route_number,
+                boardingDisabled: r.boarding_disabled,
+                lat: r.lat === null ? null : Number(r.lat),
+                lng: r.lng === null ? null : Number(r.lng),
+            }));
+
+            const response = {
+                message: "Train route fetched successfully",
+                data: {
+                    train: {
+                        train_number: train.train_number,
+                        train_name: train.train_name,
+                        train_owner: train.train_owner,
+                        duration: train.duration,
+                        station_from: train.station_from,
+                        station_to: train.station_to,
+                        runs_on: train.runs_on,
+                    },
+                    totalStops: stops.length,
+                    totalDistance: stops.reduce((max, s) => (s.distance == null ? max : Math.max(max, s.distance)), null),
+                    mappedStops: stops.filter((s) => s.lat !== null).length,
+                    stops,
+                },
+            };
+
+            CacheService.set(cacheKey, response, 24 * 60 * 60);
+            return ResponseService.jsonResponse(res, ConstantService.responseCode.SUCCESS, response);
+        } catch (exception) {
+            LogService.error(exception);
+            return ResponseService.json(res, ConstantService.responseCode.INTERNAL_SERVER_ERROR, ConstantService.responseMessage.ERR_OOPS_SOMETHING_WENT_WRONG);
+        }
+    },
+
+    /**
      * Find trains between two locations (place, station, or state).
      * API Endpoint :   /train/between/places
      * API Method   :   GET
@@ -676,80 +817,98 @@ module.exports = {
             LogService.info("====================== TRAIN BETWEEN PLACES API ==============================");
             LogService.info("REQ QUERY : ", { ...req.query });
 
-            const request = {
-                from: req.query.from,
-                to: req.query.to,
-                date: req.query.date,
-                limit: req.query.limit,
-                sort: req.query.sort,
-                order: req.query.order,
-            };
-
             const schema = Joi.object().keys({
                 from: Joi.string().required().min(1).max(100).trim(),
                 to: Joi.string().required().min(1).max(100).trim(),
+                from_kind: Joi.string().valid("station", "city", "place", "district", "state").optional().allow("", null),
+                to_kind: Joi.string().valid("station", "city", "place", "district", "state").optional().allow("", null),
                 date: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional().allow(""),
+                skip: Joi.number().integer().min(0).optional().default(0),
                 limit: Joi.number().integer().min(1).max(100).optional().default(30),
                 sort: Joi.string().valid("duration", "departure_time", "arrival_time").default("duration").optional(),
                 order: Joi.string().valid("asc", "desc").default("asc").optional(),
             });
 
-            const { error, value } = schema.validate(request, { abortEarly: false, stripUnknown: true });
+            const { error, value } = schema.validate(
+                {
+                    from: req.query.from,
+                    to: req.query.to,
+                    from_kind: req.query.from_kind,
+                    to_kind: req.query.to_kind,
+                    date: req.query.date,
+                    skip: req.query.skip,
+                    limit: req.query.limit,
+                    sort: req.query.sort,
+                    order: req.query.order,
+                },
+                { abortEarly: false, stripUnknown: true },
+            );
             if (error) {
-                return ResponseService.jsonResponse(res, ConstantService.responseCode.BAD_REQUEST, {
-                    message: error.message,
-                });
+                return ResponseService.jsonResponse(res, ConstantService.responseCode.BAD_REQUEST, { message: error.message });
             }
 
-            const { from: fromInput, to: toInput, date: dateStr, limit, sort, order } = value;
+            const { from: fromInput, to: toInput, from_kind: fromKind, to_kind: toKind, date: dateStr, skip, limit, sort, order } = value;
+
             let day = null;
             if (dateStr) {
-                const d = new Date(dateStr);
-                if (!Number.isNaN(d.getTime())) day = d.getDay();
+                // The pattern admits 2026-13-45, so only a real calendar date may
+                // filter. Read the weekday in UTC: getDay() would answer in the
+                // server's zone and shift the day west of UTC.
+                const d = new Date(`${dateStr}T00:00:00Z`);
+                if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== dateStr) {
+                    return ResponseService.jsonResponse(res, ConstantService.responseCode.BAD_REQUEST, {
+                        message: `Invalid date: ${dateStr}`,
+                    });
+                }
+                day = d.getUTCDay();
             }
+            const hasDateFilter = day != null;
 
-            const cacheKey = `train:place:${fromInput}:${toInput}:${dateStr || "all"}:${limit}:${sort}:${order}`;
+            const cacheKey = `train:place:${fromKind || "?"}:${fromInput}:${toKind || "?"}:${toInput}:${dateStr || "all"}:${skip}:${limit}:${sort}:${order}`;
             const cached = CacheService.get(cacheKey);
             if (cached) {
                 LogService.info(`[CACHE HIT] ${cacheKey}`);
                 return ResponseService.jsonResponse(res, ConstantService.responseCode.SUCCESS, cached);
             }
-            LogService.info(`[CACHE MISS] ${cacheKey}`);
 
-            const { fromResult, toResult } = await PlaceService.resolveFromTo(fromInput, toInput);
+            const { fromResult, toResult } = await PlaceService.resolveFromTo(fromInput, toInput, fromKind || null, toKind || null);
+            const fromCodes = fromResult.stations.map((s) => s.code);
+            const toCodes = toResult.stations.map((s) => s.code);
 
-            if (fromResult.stations.length === 0) {
+            const describe = (input, result) => ({
+                input,
+                type: result.type,
+                label: result.label,
+                parent: result.parent || null,
+                stations: result.stations.map((s) => ({ code: s.code, name: s.name })),
+            });
+
+            if (fromCodes.length === 0 || toCodes.length === 0) {
+                const unresolved = [fromCodes.length === 0 ? fromInput : null, toCodes.length === 0 ? toInput : null].filter(Boolean);
                 return ResponseService.jsonResponse(res, ConstantService.responseCode.BAD_REQUEST, {
-                    message: `Could not find stations for: ${fromInput}. Try a station code, place name, or state name.`,
+                    message: `Could not match ${unresolved.join(" or ")} to any station, city, district or state`,
+                    data: {
+                        from: describe(fromInput, fromResult),
+                        to: describe(toInput, toResult),
+                        totalCount: 0,
+                        trains: [],
+                        date: dateStr || null,
+                        dayOfWeek: hasDateFilter ? day : undefined,
+                    },
                 });
             }
-            if (toResult.stations.length === 0) {
-                return ResponseService.jsonResponse(res, ConstantService.responseCode.BAD_REQUEST, {
-                    message: `Could not find stations for: ${toInput}. Try a station code, place name, or state name.`,
-                });
-            }
 
-            const fromStations = fromResult.stations;
-            const toStations = toResult.stations;
-
-            const TRAINS_PER_PAIR = 15;
             const DAY_COLS = ["runs_on_sun", "runs_on_mon", "runs_on_tue", "runs_on_wed", "runs_on_thu", "runs_on_fri", "runs_on_sat"];
-            const hasDateFilter = day != null && day >= 0 && day <= 6;
             const dayCondition = hasDateFilter ? ` AND t.${DAY_COLS[day]} = true` : "";
+            const altDayCondition = hasDateFilter ? ` AND t.${DAY_COLS[day]} = false` : "";
 
-            // Duration in minutes: (arrival_time + day_offset) - departure_time
-            // Handle NULL day_count: NULL defaults to 1 (first day of journey)
+            const DEP = asTime("from_stop.departure_time");
+            const ARR = asTime("to_stop.arrival_time");
             const DURATION_MINS = `(
-                EXTRACT(EPOCH FROM (to_stop.arrival_time::time)) / 60
+                EXTRACT(EPOCH FROM ${ARR}) / 60
                 + GREATEST(0, COALESCE(to_stop.day_count, 1) - COALESCE(from_stop.day_count, 1)) * 24 * 60
-                - EXTRACT(EPOCH FROM (from_stop.departure_time::time)) / 60
+                - EXTRACT(EPOCH FROM ${DEP}) / 60
             )`;
-            const sortExpr = {
-                duration: DURATION_MINS,
-                departure_time: "from_stop.departure_time::time",
-                arrival_time: "to_stop.arrival_time::time",
-            };
-            const orderBy = `${sortExpr[sort]} ${order.toUpperCase()} NULLS LAST, t.train_number`;
 
             const ROUTE_REACHABILITY = `
                 AND (
@@ -767,89 +926,107 @@ module.exports = {
                     )
                 )`;
 
-            const trainJoins = `
+            /*
+             * One query for every station pair, instead of a sequential loop over
+             * the cross product. WITH ORDINALITY carries each station's curated
+             * rank, and DISTINCT ON keeps a single row per train: the best-ranked
+             * boarding point, then the widest segment. Ordering and paging then
+             * apply to the whole result set rather than to whatever the loop
+             * happened to collect first.
+             */
+            const bestPerTrain = (extraCondition) => `
+                SELECT DISTINCT ON (t.id)
+                    t.id AS train_id,
+                    LPAD(t.train_number::text, 5, '0') AS train_number,
+                    t.train_name,
+                    CASE
+                        WHEN ${DEP} IS NOT NULL AND ${ARR} IS NOT NULL THEN (
+                            SELECT LPAD((dm / 60)::text, 2, '0') || ':' || LPAD((dm % 60)::text, 2, '0')
+                            FROM (SELECT GREATEST(0, ${DURATION_MINS})::int AS dm) x
+                        )
+                        ELSE t.duration
+                    END AS duration,
+                    /*
+                     * Must stay NULL when either time is missing so NULLS LAST can
+                     * push it to the end. GREATEST ignores NULLs, so the obvious
+                     * GREATEST(0, ...) would score these 0 and sort them first -
+                     * a 10h train ahead of a 7h one under the default sort.
+                     */
+                    CASE WHEN ${DEP} IS NULL OR ${ARR} IS NULL
+                         THEN NULL ELSE GREATEST(0, ${DURATION_MINS})::int END AS duration_mins,
+                    ARRAY[
+                        t.runs_on_mon::int, t.runs_on_tue::int, t.runs_on_wed::int,
+                        t.runs_on_thu::int, t.runs_on_fri::int, t.runs_on_sat::int, t.runs_on_sun::int
+                    ] AS "runs_on",
+                    from_stop.station_code AS from_station_code,
+                    from_stop.station_name AS from_station_name,
+                    from_stop.departure_time AS departure_time,
+                    to_stop.station_code AS to_station_code,
+                    to_stop.station_name AS to_station_name,
+                    to_stop.arrival_time AS arrival_time,
+                    (to_stop.distance - from_stop.distance) AS distance_between
                 FROM trains t
-                INNER JOIN train_route from_stop
-                    ON from_stop.train_id = t.id AND from_stop.station_code = $1
-                INNER JOIN train_route to_stop
-                    ON to_stop.train_id = t.id AND to_stop.station_code = $2
+                INNER JOIN train_route from_stop ON from_stop.train_id = t.id
+                INNER JOIN unnest($1::text[]) WITH ORDINALITY AS f(code, ord) ON f.code = from_stop.station_code
+                INNER JOIN train_route to_stop ON to_stop.train_id = t.id
+                INNER JOIN unnest($2::text[]) WITH ORDINALITY AS v(code, ord) ON v.code = to_stop.station_code
                 WHERE from_stop.serial_number < to_stop.serial_number
                     AND from_stop.boarding_disabled = false
                     AND to_stop.boarding_disabled = false
-                    ${ROUTE_REACHABILITY}`;
+                    ${ROUTE_REACHABILITY}
+                    ${extraCondition}
+                ORDER BY t.id,
+                    (${DEP} IS NULL OR ${ARR} IS NULL),
+                    f.ord, v.ord, from_stop.serial_number, to_stop.serial_number DESC`;
 
-            const trainSelect = `
-                LPAD(t.train_number::text, 5, '0') AS train_number,
-                t.train_name,
-                CASE
-                    WHEN from_stop.departure_time IS NOT NULL AND to_stop.arrival_time IS NOT NULL THEN (
-                        SELECT LPAD((dm / 60)::text, 2, '0') || ':' || LPAD((dm % 60)::text, 2, '0')
-                        FROM (SELECT GREATEST(0, ${DURATION_MINS})::int AS dm) x
-                    )
-                    ELSE t.duration
-                END AS duration,
-                ARRAY[
-                    t.runs_on_mon::int, t.runs_on_tue::int, t.runs_on_wed::int,
-                    t.runs_on_thu::int, t.runs_on_fri::int, t.runs_on_sat::int, t.runs_on_sun::int
-                ] AS "runs_on",
-                from_stop.station_code AS from_station_code,
-                from_stop.station_name AS from_station_name,
-                from_stop.departure_time AS departure_time,
-                to_stop.station_code AS to_station_code,
-                to_stop.station_name AS to_station_name,
-                to_stop.arrival_time AS arrival_time,
-                (to_stop.distance - from_stop.distance) AS distance_between`;
+            const OUT_COLS = `train_number, train_name, duration, "runs_on",
+                from_station_code, from_station_name, departure_time,
+                to_station_code, to_station_name, arrival_time, distance_between`;
+            const sortExpr = {
+                duration: "duration_mins",
+                departure_time: asTime("departure_time"),
+                arrival_time: asTime("arrival_time"),
+            }[sort];
+            const outerOrder = `${sortExpr} ${order.toUpperCase()} NULLS LAST, train_number`;
 
-            const trainsSQL = `
-                SELECT ${trainSelect}
-                ${trainJoins}
-                ${dayCondition}
-                ORDER BY ${orderBy}
-                LIMIT $3
-            `;
+            const listSQL = `SELECT ${OUT_COLS} FROM (${bestPerTrain(dayCondition)}) b ORDER BY ${outerOrder} LIMIT $3 OFFSET $4`;
+            const countSQL = `SELECT COUNT(*)::int AS total FROM (${bestPerTrain(dayCondition)}) b`;
 
-            const seenTrainNumbers = new Set();
-            const allTrains = [];
-
-            for (const fs of fromStations) {
-                for (const ts of toStations) {
-                    if (fs.code === ts.code) continue;
-                    const result = await SqlService.executeQuery(trainsSQL, [fs.code, ts.code, TRAINS_PER_PAIR]);
-                    const rows = result.rows || [];
-                    for (const row of rows) {
-                        if (!seenTrainNumbers.has(row.train_number)) {
-                            seenTrainNumbers.add(row.train_number);
-                            allTrains.push(row);
-                            if (allTrains.length >= limit) break;
-                        }
-                    }
-                    if (allTrains.length >= limit) break;
-                }
-                if (allTrains.length >= limit) break;
+            const queries = [
+                SqlService.executeQuery(listSQL, [fromCodes, toCodes, limit, skip]),
+                SqlService.executeQuery(countSQL, [fromCodes, toCodes]),
+            ];
+            if (hasDateFilter) {
+                queries.push(
+                    SqlService.executeQuery(
+                        `SELECT ${OUT_COLS} FROM (${bestPerTrain(altDayCondition)}) b ORDER BY ${outerOrder} LIMIT 50`,
+                        [fromCodes, toCodes],
+                    ),
+                );
+                queries.push(
+                    SqlService.executeQuery(`SELECT COUNT(*)::int AS total FROM (${bestPerTrain(altDayCondition)}) b`, [fromCodes, toCodes]),
+                );
             }
 
-            sortTrains(allTrains, sort, order);
+            const [listRes, countRes, altRes, altCountRes] = await Promise.all(queries);
 
             const data = {
-                from: { input: fromInput, type: fromResult.type, label: fromResult.label, stations: fromStations },
-                to: { input: toInput, type: toResult.type, label: toResult.label, stations: toStations },
-                totalCount: allTrains.length,
-                trains: allTrains.slice(0, limit),
+                from: describe(fromInput, fromResult),
+                to: describe(toInput, toResult),
+                totalCount: countRes.rows[0]?.total || 0,
+                trains: listRes.rows,
             };
             if (hasDateFilter) {
                 data.date = dateStr || null;
                 data.dayOfWeek = day;
+                data.alternate_days = {
+                    totalCount: altCountRes?.rows[0]?.total || 0,
+                    trains: altRes?.rows || [],
+                };
             }
 
-            const response = {
-                message: ConstantService.responseMessage.TRAIN_BETWEEN_PLACES,
-                data,
-            };
-
-            // Cache the response for 1 day (24 hours)
-            const ttlSeconds = 24 * 60 * 60; // 1 day in seconds
-            CacheService.set(cacheKey, response, ttlSeconds);
-
+            const response = { message: ConstantService.responseMessage.TRAIN_BETWEEN_PLACES, data };
+            CacheService.set(cacheKey, response, 24 * 60 * 60);
             return ResponseService.jsonResponse(res, ConstantService.responseCode.SUCCESS, response);
         } catch (exception) {
             LogService.error(exception);
