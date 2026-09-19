@@ -4,7 +4,19 @@
 const NodeCache = require("node-cache");
 
 const ttlSeconds = customConfig.CACHE_TTL_SECONDS ?? 300;
-const cache = new NodeCache({ stdTTL: ttlSeconds, checkperiod: 60 });
+
+/*
+ * maxKeys is a hard bound, not a tuning knob: /place/suggest keys off arbitrary
+ * user text, so without it a single crawler fills the heap for a whole TTL.
+ * node-cache throws once the bound is reached rather than evicting, so set()
+ * swallows that - dropping a cache write is always better than failing the
+ * request that produced it.
+ */
+const cache = new NodeCache({
+  stdTTL: ttlSeconds,
+  checkperiod: 60,
+  maxKeys: customConfig.CACHE_MAX_KEYS,
+});
 
 function isEnabled() {
   return customConfig.CACHE_ENABLED !== false;
@@ -17,10 +29,14 @@ function get(key) {
 
 function set(key, value, ttlSeconds) {
   if (!isEnabled()) return;
-  if (ttlSeconds !== undefined) {
-    cache.set(key, value, ttlSeconds);
-  } else {
-    cache.set(key, value);
+  try {
+    if (ttlSeconds !== undefined) {
+      cache.set(key, value, ttlSeconds);
+    } else {
+      cache.set(key, value);
+    }
+  } catch (err) {
+    LogService.error("Cache set failed:", err.message || err);
   }
 }
 

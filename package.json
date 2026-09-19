@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node app.js",
     "dev": "NODE_ENV=development node app.js",
+    "seed:places": "node scripts/seed-places.js",
     "sync:stations": "node scripts/sync-stations.js",
     "sync:popular": "node scripts/sync-popular-stations.js",
     "sync:trains": "node scripts/sync-trains-list.js",
